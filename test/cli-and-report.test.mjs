@@ -81,6 +81,7 @@ test('renders full read coverage in the default HTML artifact', () => {
   });
   const html = renderHtml(report);
   assert.match(html, /Read coverage/);
+  assert.doesNotMatch(html, /NaN/);
   assert.match(html, /experimental transcript format/);
   assert.match(html, /discovery capped at 10 files per root/);
   assert.match(html, /4 sessions without an identifiable project were excluded/);

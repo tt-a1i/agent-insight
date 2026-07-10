@@ -1,14 +1,19 @@
-import { chmod, mkdir, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { extname, join, resolve } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { collectSessions, inspectSources, resolveSources, SUPPORTED_SOURCES } from './adapters.mjs';
 import { summarizeSessions } from './analyze.mjs';
 import { installIntegration, AGENTS } from './integrations.mjs';
 import { parseSessionFile } from './parse.mjs';
 import { writeReport } from './report.mjs';
+import { HOSTS, resolveInsightRequest } from './interaction.mjs';
+import { FacetCache } from './cache.mjs';
+import { finalizeSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun } from './semantic-run.mjs';
+import { compareParityReports, createBlindSemanticBundle } from './parity.mjs';
 
-const HELP = `agent-insight — local-first cross-agent session insights\n\nUsage:\n  agent-insight doctor [--source auto|codex,claude,...] [--json]\n  agent-insight report [--source auto|codex,claude,...] [--days 30|--all]\n                       [--project <path>] [--input <export-file>] [--output <directory>]\n                       [--include-subagents] [--max-file-mb 16] [--max-sessions 100]\n                       [--max-discovery-files 10000]\n  agent-insight install --agent claude|codex|cursor|opencode|pi [--scope project|user] [--force]\n  agent-insight import --source groq|generic --from <export-file>\n\nThe report is metadata-only: no raw prompts, tool output, code, source file paths, or session IDs are written.\n`;
+const HELP = `agent-insight — local-first cross-agent session insights\n\nUsage:\n  agent-insight insights --host claude|codex|cursor|opencode|pi\n  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD]\n  agent-insight semantic next|ingest|finalize --run <run-id> [--task <task-id>] [--output <directory>]\n  agent-insight cache status|clear|rebuild\n  agent-insight parity compare --reference <report.json> --candidate <report.json> [--output <comparison.json>] [--blind-output <review.json>]\n  agent-insight doctor [--source auto|codex,claude,...] [--json]\n  agent-insight report [--source auto|codex,claude,...] [--days 30|--all]\n                       [--project <path>] [--input <export-file>] [--output <directory>]\n                       [--include-subagents] [--max-file-mb 16] [--max-sessions 100]\n                       [--max-discovery-files 10000]\n  agent-insight install --agent claude|codex|cursor|opencode|pi [--scope project|user] [--force]\n  agent-insight import --source groq|generic --from <export-file>\n\nInsights uses the current host model for semantic analysis. Reports never contain raw prompts, tool output, code, source file paths, or raw session IDs.\n`;
 
 function parseFlags(args) {
   const flags = { _: [] };
@@ -91,6 +96,168 @@ async function runReport(flags, context) {
   return { report, files };
 }
 
+async function prepareFromRequest(request, flags, context) {
+  const collected = await collectSessions({
+    sources: request.sources.join(','),
+    home: context.home,
+    cwd: context.cwd,
+    days: request.days ?? Infinity,
+    start: request.start,
+    end: request.end,
+    maxFileBytes: maxFileBytesFrom(flags),
+    maxSessionsPerSource: flags['max-sessions'] === undefined ? 100_000 : maxSessionsFrom(flags),
+    maxDiscoveryFiles: flags['max-discovery-files'] === undefined ? 100_000 : maxDiscoveryFilesFrom(flags)
+  });
+  if (collected.analysisCandidates.length === 0) throw new Error('No analyzable sessions were found for the selected agents and time range.');
+  const base = join(context.home, '.agent-insight');
+  const run = await prepareSemanticRun({
+    runsRoot: join(base, 'runs'),
+    cache: new FacetCache(join(base, 'cache', 'facets')),
+    request,
+    candidates: collected.analysisCandidates,
+    analyzer: { host: request.host, model: typeof flags.model === 'string' ? flags.model : null },
+    diagnostics: collected.diagnostics
+  });
+  if (!context.quiet) console.log(JSON.stringify({ runId: run.id, manifestPath: run.manifestPath }, null, 2));
+  return { request, runId: run.id, manifestPath: run.manifestPath };
+}
+
+async function runInsights(flags, context) {
+  let reader;
+  const ask = context.ask ?? ((question) => {
+    reader ??= createInterface({ input: process.stdin, output: process.stdout });
+    return reader.question(question);
+  });
+  let request;
+  try {
+    request = await resolveInsightRequest({ host: flags.host, fast: Boolean(flags.fast) }, { ask });
+  } finally {
+    reader?.close();
+  }
+  const prepared = await prepareFromRequest(request, flags, context);
+  if (!context.quiet) console.log(`Next: agent-insight semantic next --run ${prepared.runId}`);
+  return prepared;
+}
+
+function requireHostFlag(value) {
+  const host = String(value ?? '').toLowerCase();
+  if (!HOSTS.includes(host)) throw new Error(`--host must be one of: ${HOSTS.join(', ')}.`);
+  return host;
+}
+
+function dateFlag(value, label) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00.000Z`))) {
+    throw new Error(`${label} must use YYYY-MM-DD.`);
+  }
+  return value;
+}
+
+function requestFromFlags(flags) {
+  const host = requireHostFlag(flags.host);
+  const sources = resolveSources(flags.source ?? host);
+  const invalid = sources.filter((source) => !HOSTS.includes(source));
+  if (invalid.length) throw new Error(`Semantic insights supports agent sources only: ${HOSTS.join(', ')}.`);
+  const custom = flags.start !== undefined || flags.end !== undefined;
+  if (custom && (flags.all || flags.days !== undefined)) throw new Error('Use either --days/--all or --start with --end.');
+  const start = custom ? dateFlag(flags.start, '--start') : null;
+  const end = custom ? dateFlag(flags.end, '--end') : null;
+  if (start && end && start > end) throw new Error('--start must not be after --end.');
+  const days = custom ? null : daysFrom(flags);
+  const allSelected = HOSTS.every((source) => sources.includes(source)) && sources.length === HOSTS.length;
+  return {
+    host,
+    sources,
+    scope: allSelected ? 'all' : sources.length === 1 && sources[0] === host ? 'current' : 'select',
+    days,
+    start,
+    end,
+    semantic: true,
+    fast: Boolean(flags.fast)
+  };
+}
+
+async function runPrepare(flags, context) {
+  return prepareFromRequest(requestFromFlags(flags), flags, context);
+}
+
+function semanticPaths(context) {
+  const base = join(context.home, '.agent-insight');
+  return { runsRoot: join(base, 'runs'), cache: new FacetCache(join(base, 'cache', 'facets')) };
+}
+
+async function runSemantic(flags, context) {
+  const action = flags._[0];
+  if (!['next', 'ingest', 'finalize'].includes(action)) throw new Error('semantic requires next, ingest, or finalize.');
+  if (typeof flags.run !== 'string') throw new Error('semantic requires --run <run-id>.');
+  const paths = semanticPaths(context);
+  if (action === 'next') {
+    const task = await nextSemanticTask({ ...paths, runId: flags.run });
+    if (!context.quiet) console.log(JSON.stringify(task, null, 2));
+    return task;
+  }
+  if (action === 'ingest') {
+    if (typeof flags.task !== 'string') throw new Error('semantic ingest requires --task <task-id>.');
+    const expected = await nextSemanticTask({ ...paths, runId: flags.run });
+    if (expected.id !== flags.task || typeof expected.submissionPath !== 'string') throw new Error('The submitted task is not the next pending semantic task.');
+    const info = await lstat(expected.submissionPath);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 2 * 1024 * 1024) throw new Error('Semantic submission must be a regular JSON file no larger than 2 MiB.');
+    const result = JSON.parse(await readFile(expected.submissionPath, 'utf8'));
+    const value = await ingestSemanticResult({ ...paths, runId: flags.run, taskId: flags.task, result });
+    await unlink(expected.submissionPath);
+    if (!context.quiet) console.log(JSON.stringify(value, null, 2));
+    return value;
+  }
+  const outputDirectory = resolve(typeof flags.output === 'string' ? flags.output : join(context.home, '.agent-insight', 'usage-data'));
+  const value = await finalizeSemanticRun({ runsRoot: paths.runsRoot, runId: flags.run, outputDirectory });
+  if (!context.quiet) {
+    console.log(`Your shareable insights report is ready:\nfile://${value.files.timestampedHtml}`);
+    console.log('\nWant to dig into any section or try one of the suggestions?');
+  }
+  return value;
+}
+
+async function runCache(flags, context) {
+  const action = flags._[0] ?? 'status';
+  const cache = semanticPaths(context).cache;
+  if (action === 'status') {
+    const value = await cache.status();
+    if (!context.quiet) console.log(JSON.stringify(value, null, 2));
+    return value;
+  }
+  if (action === 'clear' || action === 'rebuild') {
+    const value = await cache.clear();
+    if (!context.quiet) console.log(`${value} cached facets removed${action === 'rebuild' ? '; the next run will rebuild them' : ''}.`);
+    return value;
+  }
+  throw new Error('cache requires status, clear, or rebuild.');
+}
+
+async function writePrivateJson(path, value) {
+  const target = resolve(path);
+  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+  await writeFile(target, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  await chmod(target, 0o600);
+  return target;
+}
+
+async function runParity(flags, context) {
+  if (flags._[0] !== 'compare') throw new Error('parity requires compare.');
+  if (typeof flags.reference !== 'string' || typeof flags.candidate !== 'string') {
+    throw new Error('parity compare requires --reference <report.json> and --candidate <report.json>.');
+  }
+  const [reference, candidate] = await Promise.all([
+    readFile(resolve(flags.reference), 'utf8').then(JSON.parse),
+    readFile(resolve(flags.candidate), 'utf8').then(JSON.parse)
+  ]);
+  const comparison = compareParityReports(reference, candidate);
+  if (typeof flags.output === 'string') await writePrivateJson(flags.output, comparison);
+  if (typeof flags['blind-output'] === 'string') {
+    await writePrivateJson(flags['blind-output'], createBlindSemanticBundle(reference, candidate, { seed: String(flags.seed ?? '') }));
+  }
+  if (!context.quiet) console.log(JSON.stringify(comparison, null, 2));
+  return comparison;
+}
+
 async function runImport(flags, context) {
   const source = String(flags.source ?? 'generic').toLowerCase();
   if (!['groq', 'generic'].includes(source)) throw new Error('import currently supports --source groq or --source generic.');
@@ -136,22 +303,29 @@ async function runImport(flags, context) {
   console.log(`Imported ${source} metadata snapshot: ${target}`);
 }
 
-export async function main(argv = process.argv.slice(2), { cwd = process.cwd(), home = homedir() } = {}) {
+export async function main(argv = process.argv.slice(2), options = {}) {
+  const cwd = options.cwd ?? process.cwd();
+  const home = options.home ?? homedir();
   const [command = 'help', ...rest] = argv;
   const flags = parseFlags(rest);
-  const context = { cwd, home };
+  const context = { cwd, home, ask: options.ask, quiet: Boolean(options.quiet) };
   if (command === 'help' || command === '--help' || command === '-h') {
     console.log(HELP);
     return;
   }
   if (command === '--version' || command === 'version') {
-    console.log('agent-insight 0.1.0');
+    console.log('agent-insight 0.2.0');
     return;
   }
   if (command === 'doctor') {
     printDoctor(await inspectSources({ ...context, sources: flags.source ?? 'auto' }), Boolean(flags.json));
     return;
   }
+  if (command === 'insights') return runInsights(flags, context);
+  if (command === 'prepare') return runPrepare(flags, context);
+  if (command === 'semantic') return runSemantic(flags, context);
+  if (command === 'cache') return runCache(flags, context);
+  if (command === 'parity') return runParity(flags, context);
   if (command === 'report') return runReport(flags, context);
   if (command === 'install') {
     const agent = String(flags.agent ?? '').toLowerCase();

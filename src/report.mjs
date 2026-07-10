@@ -24,8 +24,17 @@ function coverageNotes(source) {
 
 function projectFilterNote(report) {
   const filter = report.coverage.projectFilter;
-  if (!filter?.requested) return 'No project filter was requested.';
-  return `A project filter was requested; ${number(filter.unknownProjectExcluded ?? 0)} session${filter.unknownProjectExcluded === 1 ? '' : 's'} without an identifiable project were excluded.`;
+  const project = !filter?.requested
+    ? 'No project filter was requested.'
+    : `A project filter was requested; ${number(filter.unknownProjectExcluded ?? 0)} session${filter.unknownProjectExcluded === 1 ? '' : 's'} without an identifiable project were excluded.`;
+  return `${project} ${eligibilityNote(report)}`;
+}
+
+function eligibilityNote(report) {
+  const eligibility = report.coverage?.eligibility;
+  if (!eligibility) return 'Eligibility was not evaluated for this deterministic-only report.';
+  const reasons = Object.entries(eligibility.reasons ?? {}).map(([reason, count]) => `${number(count)} ${reason.replaceAll('_', ' ')}`).join(', ');
+  return `${number(eligibility.eligible)} eligible, ${number(eligibility.excluded)} excluded, ${number(eligibility.scanned)} scanned${reasons ? ` (${reasons})` : ''}.`;
 }
 
 function sourceTable(report) {
@@ -61,36 +70,93 @@ export function renderAgentPrompt(report) {
   return `# Agent Insights narrative handoff\n\nRead \`report.md\` in this same directory, then give the user a concise personalized review.\n\nRules:\n\n- Treat every count as metadata, not proof of intent, satisfaction, or quality.\n- Clearly separate measured facts from your inference.\n- Do not claim to have read raw conversation text; this report deliberately does not contain it.\n- Check **Read coverage** first; do not compare or generalize from a partial, unavailable, root-only, or experimental source as if it were complete.\n- Prioritize 2–3 durable changes: project instructions, a reusable skill/command, or an environment/tooling fix.\n- Avoid vendor-specific advice unless the report shows that source.\n\nCurrent coverage: ${report.totals.sessions} sessions across ${Object.keys(report.sources).length} detected agent sources.\n`;
 }
 
+function evidence(ids) {
+  return ids?.length ? `<p class="evidence">Evidence: ${ids.map(escapeHtml).join(', ')}</p>` : '<p class="evidence missing">Evidence unavailable</p>';
+}
+
+function entries(value, order) {
+  const items = Object.entries(value ?? {}).filter(([, count]) => Number(count) > 0);
+  if (order) return order.flatMap((name) => value?.[name] ? [[name, value[name]]] : []);
+  return items.sort(([, left], [, right]) => right - left).slice(0, 6);
+}
+
+function barChart(label, value, { order } = {}) {
+  const items = Array.isArray(value) ? value : entries(value, order);
+  if (!items.length) return `<div class="empty">No data</div><table class="sr-only" aria-label="${escapeHtml(label)} data"><tbody></tbody></table>`;
+  const maximum = Math.max(1, ...items.map(([, count]) => Number(count)));
+  return `<div class="bar-chart">${items.map(([name, count]) => `<div class="bar-row"><span>${escapeHtml(name)}</span><div class="bar-track"><i style="width:${Math.round((Number(count) / maximum) * 100)}%"></i></div><strong>${number(count)}</strong></div>`).join('')}</div><table class="sr-only" aria-label="${escapeHtml(label)} data"><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${items.map(([name, count]) => `<tr><td>${escapeHtml(name)}</td><td>${number(count)}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function responseTimeBuckets(values) {
+  const buckets = [
+    ['2–10s', 2, 10], ['10–30s', 10, 30], ['30s–1m', 30, 60], ['1–2m', 60, 120],
+    ['2–5m', 120, 300], ['5–15m', 300, 900], ['>15m', 900, Infinity]
+  ];
+  return buckets.map(([label, minimum, maximum]) => [label, (values ?? []).filter((value) => value >= minimum && value < maximum).length]);
+}
+
+function timeOfDayBuckets(messageHours) {
+  const total = (minimum, maximum) => Object.entries(messageHours ?? {}).reduce((sum, [hour, count]) => {
+    const value = Number(hour);
+    return sum + (value >= minimum && value < maximum ? Number(count) : 0);
+  }, 0);
+  return [['Morning', total(6, 12)], ['Afternoon', total(12, 18)], ['Evening', total(18, 24)], ['Night', total(0, 6)]];
+}
+
+function proseCard(title, text) {
+  return `<article class="prose-card"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(text ?? 'Analysis unavailable.')}</p></article>`;
+}
+
+function sectionCards(items, renderer) {
+  return items?.length ? `<div class="card-grid">${items.map(renderer).join('')}</div>` : '<div class="empty">This section is unavailable for the current coverage.</div>';
+}
+
 export function renderHtml(report) {
-  const cards = [
-    ['Sessions', report.totals.sessions],
-    ['User turns', report.totals.userMessages],
-    ['Assistant turns', report.totals.assistantMessages],
-    ['Tool calls', report.totals.toolCalls],
-    ['Tool errors', report.totals.toolErrors],
-    ['Turn failures', report.totals.turnFailures]
-  ].map(([label, value]) => `<article class="metric"><span>${escapeHtml(label)}</span><strong>${number(value)}</strong></article>`).join('');
-  const rows = Object.entries(report.sources).map(([source, stats]) => `<tr><td>${escapeHtml(source)}</td><td>${number(stats.sessions)}</td><td>${number(stats.userMessages)}</td><td>${number(stats.assistantMessages)}</td><td>${number(stats.toolCalls)}</td><td>${number(stats.toolErrors)}</td></tr>`).join('') || '<tr><td colspan="6">No compatible local sessions were found.</td></tr>';
-  const coverageRows = report.coverage.sourcesScanned.map((source) => `<tr><td>${escapeHtml(source.source)}</td><td>${escapeHtml(source.coverage)}</td><td>${coverageNumber(source.filesFound)}</td><td>${coverageNumber(source.filesWithinWindow)}</td><td>${coverageNumber(source.filesSelected)}</td><td>${coverageNumber(source.filesLimited)}</td><td>${coverageNumber(source.filesPartial)}</td><td>${coverageNumber(source.filesSkipped)}</td><td>${escapeHtml(coverageNotes(source))}</td></tr>`).join('') || '<tr><td colspan="9">No source probes ran.</td></tr>';
-  const cardsList = (items) => items.map((item) => `<article class="note"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p></article>`).join('');
-  const bars = (items) => items.length ? items.map((item) => `<li><span>${escapeHtml(item.name)}</span><strong>${number(item.count)}</strong></li>`).join('') : '<li><span>No data</span></li>';
-  const range = report.dateRange.start ? `${report.dateRange.start} to ${report.dateRange.end}` : 'No eligible sessions';
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Insight</title><style>:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#10151e;color:#e9eef9}body{max-width:1080px;margin:0 auto;padding:48px 24px 72px;background:radial-gradient(circle at top right,#1c355c 0,transparent 30rem)}h1{font-size:42px;letter-spacing:-.06em;margin:0 0 8px}h2{margin:38px 0 14px;font-size:20px}.muted{color:#9eacc2}.metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-top:28px}.metric,.note{background:#182130;border:1px solid #2b3a51;border-radius:14px;padding:18px}.metric span{display:block;color:#9eacc2;font-size:13px}.metric strong{font-size:28px;letter-spacing:-.04em}.table-wrap{overflow:auto;border-radius:14px}table{width:100%;border-collapse:collapse;background:#182130;border-radius:14px;overflow:hidden}td,th{padding:12px;text-align:left;border-bottom:1px solid #2b3a51;vertical-align:top}th{color:#9eacc2;font-weight:500;white-space:nowrap}.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.note h3{font-size:15px;margin:0 0 8px}.note p{margin:0;line-height:1.55;color:#c2cede}ul{list-style:none;padding:0;margin:0;background:#182130;border:1px solid #2b3a51;border-radius:14px}li{display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #2b3a51}li:last-child{border:0}.privacy{font-size:13px;line-height:1.5;color:#9eacc2}@media(max-width:720px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}h1{font-size:34px}}</style></head><body><header><p class="muted">${escapeHtml(range)} · local-first cross-agent report</p><h1>Agent Insight</h1><p class="muted">${escapeHtml(report.privacy.note)}</p></header><section class="metrics">${cards}</section><section><h2>Agent coverage</h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Sessions</th><th>User</th><th>Assistant</th><th>Tools</th><th>Errors</th></tr></thead><tbody>${rows}</tbody></table></div></section><section><h2>Read coverage</h2><p class="muted">${escapeHtml(projectFilterNote(report))}</p><div class="table-wrap"><table><thead><tr><th>Source</th><th>Coverage</th><th>Found</th><th>Window</th><th>Selected</th><th>Limited</th><th>Partial</th><th>Skipped</th><th>Notes</th></tr></thead><tbody>${coverageRows}</tbody></table></div></section><section><h2>Project areas</h2><ul>${bars(report.projects)}</ul></section><section><h2>Top tools</h2><ul>${bars(report.topTools)}</ul></section><section><h2>Providers</h2><ul>${bars(report.providers)}</ul></section><section><h2>Models</h2><ul>${bars(report.models)}</ul></section><section><h2>Evidence-backed observations</h2><div class="notes">${cardsList(report.observations)}</div></section><section><h2>Next moves</h2><div class="notes">${cardsList(report.recommendations)}</div></section></body></html>`;
+  const insights = report.insights ?? {};
+  const semantic = report.semantic?.sections ?? {};
+  const glance = semantic.at_a_glance ?? {};
+  const projectAreas = semantic.project_areas?.areas ?? [];
+  const interaction = semantic.interaction_style ?? {};
+  const working = semantic.what_works ?? {};
+  const friction = semantic.friction_analysis ?? {};
+  const suggestions = semantic.suggestions ?? {};
+  const horizon = semantic.on_the_horizon ?? {};
+  const ending = semantic.fun_ending ?? {};
+  const range = insights.dateRange?.start ? `${insights.dateRange.start} to ${insights.dateRange.end}` : 'No eligible sessions';
+  const statCards = [
+    ['Messages', insights.totalMessages ?? 0],
+    ['Lines', `+${number(insights.totalLinesAdded ?? 0)} / −${number(insights.totalLinesRemoved ?? 0)}`],
+    ['Files', insights.totalFilesModified ?? 0],
+    ['Days', insights.daysActive ?? 0],
+    ['Msgs/Day', insights.messagesPerDay ?? 0]
+  ].map(([label, value]) => `<article class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`).join('');
+  const coverageRows = (report.coverage?.sourcesScanned ?? []).map((source) => `<tr><td>${escapeHtml(source.source)}</td><td>${escapeHtml(source.coverage)}</td><td>${coverageNumber(source.filesFound)}</td><td>${coverageNumber(source.filesSelected)}</td><td>${coverageNumber(source.filesLimited)}</td><td>${coverageNumber(source.filesPartial)}</td><td>${coverageNumber(source.filesSkipped)}</td><td>${escapeHtml(coverageNotes(source))}</td></tr>`).join('') || '<tr><td colspan="8">No source probes ran.</td></tr>';
+  const outcomeOrder = ['not_achieved', 'partially_achieved', 'mostly_achieved', 'fully_achieved', 'unclear_from_transcript'];
+  const satisfactionOrder = ['frustrated', 'dissatisfied', 'likely_satisfied', 'satisfied', 'happy', 'unsure'];
+  const toc = `<nav class="toc" aria-label="Report sections"><a href="#what-you-work-on">What You Work On</a><a href="#how-you-use">How You Use CC</a><a href="#impressive-things">Impressive Things</a><a href="#where-things-go-wrong">Where Things Go Wrong</a><a href="#features-to-try">Features to Try</a><a href="#new-usage-patterns">New Usage Patterns</a><a href="#on-the-horizon">On the Horizon</a><span aria-disabled="true">Team Feedback (not generated)</span></nav>`;
+  const utcHours = JSON.stringify(insights.messageHours ?? {});
+  const timeChart = `<label class="timezone">Timezone <select id="time-zone"><option value="-8">PT (UTC-8)</option><option value="-5">ET (UTC-5)</option><option value="0">London (UTC)</option><option value="1">CET (UTC+1)</option><option value="9">Tokyo (UTC+9)</option><option value="custom">Local / custom UTC offset</option></select></label><div id="time-chart" data-utc-hours="${escapeHtml(utcHours)}">${barChart('Time of day', timeOfDayBuckets(insights.messageHours))}</div>`;
+  const timezoneScript = `<script>(()=>{const select=document.getElementById('time-zone');const root=document.getElementById('time-chart');if(!select||!root)return;const source=JSON.parse(root.dataset.utcHours||'{}');const rows=[...root.querySelectorAll('.bar-row')];const render=(offset)=>{const counts=[0,0,0,0];for(const [hour,count] of Object.entries(source)){const shifted=(Number(hour)+offset+24)%24;const index=shifted>=6&&shifted<12?0:shifted>=12&&shifted<18?1:shifted>=18?2:3;counts[index]+=Number(count)||0}const maximum=Math.max(1,...counts);rows.forEach((row,index)=>{row.querySelector('strong').textContent=String(counts[index]);row.querySelector('i').style.width=Math.round(counts[index]/maximum*100)+'%'})};const local=-new Date().getTimezoneOffset()/60;const exact=[...select.options].find((option)=>Number(option.value)===local);if(exact)select.value=exact.value;else select.value='custom';render(local);select.addEventListener('change',()=>{let offset=Number(select.value);if(select.value==='custom'){const answer=window.prompt('UTC offset in hours',String(local));offset=Number(answer);if(!Number.isFinite(offset)||offset< -12||offset>14){select.value=exact?.value??'custom';offset=local}}render(offset)})})();</script>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Insight</title><style>:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,sans-serif;background:#0d1118;color:#eef3fb;--panel:#151c27;--line:#273449;--muted:#91a0b6;--accent:#78a9ff}*{box-sizing:border-box}body{max-width:1160px;margin:0 auto;padding:48px 24px 80px;background:radial-gradient(circle at 92% 0,#183b68 0,transparent 32rem)}h1{font-size:46px;letter-spacing:-.055em;margin:0 0 8px}h2{margin:46px 0 16px;font-size:22px;letter-spacing:-.02em}h3{font-size:15px;margin:0 0 9px}.muted,.evidence{color:var(--muted)}.evidence{font-size:12px;margin-top:12px}.metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:28px 0}.metric,.panel,.prose-card,.insight-card{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:18px}.metric span{display:block;color:var(--muted);font-size:12px}.metric strong{font-size:25px}.glance,.card-grid,.two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.insight-card p,.prose-card p,.panel p{line-height:1.6;color:#cad4e3;margin:0}.panel-title{font-size:13px;color:var(--muted);margin-bottom:14px}.bar-row{display:grid;grid-template-columns:minmax(90px,1fr) 3fr auto;gap:12px;align-items:center;margin:10px 0;font-size:13px}.bar-track{height:8px;border-radius:99px;background:#243044;overflow:hidden}.bar-track i{display:block;height:100%;background:linear-gradient(90deg,#568ee8,#8fb8ff);border-radius:99px}.empty{padding:18px;color:var(--muted);border:1px dashed var(--line);border-radius:12px}.callout{padding:16px 18px;border-left:3px solid var(--accent);background:#132033;border-radius:0 12px 12px 0;margin:14px 0}.copy{font-family:ui-monospace,monospace;background:#0c121c;border:1px solid var(--line);padding:12px;border-radius:9px;white-space:pre-wrap}.table-wrap{overflow:auto;border-radius:14px}table:not(.sr-only){width:100%;border-collapse:collapse;background:var(--panel)}td,th{padding:11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.status{display:inline-flex;padding:5px 9px;border-radius:99px;background:#172b24;color:#8be0ad;font-size:12px}.status.partial{background:#302817;color:#ffd675}.toc{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0}.toc a,.toc span{color:#bfd6ff;background:#121b29;border:1px solid var(--line);padding:8px 10px;border-radius:9px;font-size:12px;text-decoration:none}.toc span{color:var(--muted)}.timezone{display:flex;gap:10px;align-items:center;color:var(--muted);font-size:12px;margin-bottom:12px}.timezone select{background:#0c121c;color:#eef3fb;border:1px solid var(--line);border-radius:8px;padding:6px}@media(max-width:760px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.glance,.card-grid,.two-col{grid-template-columns:1fr}h1{font-size:36px}}</style></head><body><header><p class="muted">${escapeHtml(range)} · ${number(insights.totalSessions ?? 0)} sessions · ${number(insights.totalMessages ?? 0)} user messages</p><h1>Agent Insight</h1><p class="muted">Claude Code Insights parity target 2.1.206 · analyzer ${escapeHtml(report.semantic?.analyzer?.host ?? 'local')} / ${escapeHtml(report.semantic?.analyzer?.model ?? 'unknown')}</p><span class="status ${report.parity?.structuralStatus === 'complete' ? '' : 'partial'}">${escapeHtml(report.parity?.structuralStatus ?? 'partial')} parity coverage</span></header>${toc}<section class="metrics">${statCards}</section><section><h2>At a Glance</h2><div class="glance">${proseCard("What's working", glance.whatsWorking)}${proseCard("What's hindering you", glance.whatsHindering)}${proseCard('Quick wins to try', glance.quickWins)}${proseCard('Ambitious workflows', glance.ambitiousWorkflows)}</div>${evidence(glance.evidenceSessionIds)}</section><section id="what-you-work-on"><h2>What You Work On</h2>${sectionCards(projectAreas, (area) => `<article class="prose-card"><h3>${escapeHtml(area.name)}</h3><p>${escapeHtml(area.description)}</p><strong>${number(area.sessionCount)} sessions</strong>${evidence(area.evidenceSessionIds)}</article>`)}</section><section><h2>What You Wanted</h2><div class="two-col"><div class="panel"><div class="panel-title">Goals</div>${barChart('Goal categories', insights.goalCategories)}</div><div class="panel"><div class="panel-title">Top Tools Used</div>${barChart('Top tools', insights.toolCounts)}</div></div></section><section><h2>Languages</h2><div class="two-col"><div class="panel">${barChart('Languages', insights.languages)}</div><div class="panel"><div class="panel-title">Session Types</div>${barChart('Session types', insights.sessionTypes)}</div></div></section><section id="how-you-use"><h2>How You Use Your Agent</h2><article class="panel"><p>${escapeHtml(interaction.narrative ?? 'Interaction analysis unavailable.')}</p><div class="callout"><strong>${escapeHtml(interaction.keyPattern ?? 'No key pattern available.')}</strong></div>${evidence(interaction.evidenceSessionIds)}</article></section><section><h2>User Response Time Distribution</h2><div class="panel">${barChart('Response time distribution', responseTimeBuckets(insights.userResponseTimes))}<p class="muted">Median ${coverageNumber(insights.medianResponseTime)}s · Average ${coverageNumber(insights.averageResponseTime)}s</p></div></section><section><h2>Parallel Sessions</h2><div class="metrics">${[['Overlap pairs', insights.multiClauding?.overlapEvents ?? 0], ['Sessions involved', insights.multiClauding?.sessionsInvolved ?? 0], ['Messages during overlap', insights.multiClauding?.userMessagesDuring ?? 0]].map(([label, value]) => `<article class="metric"><span>${label}</span><strong>${number(value)}</strong></article>`).join('')}</div></section><section><h2>User Messages by Time of Day</h2><div class="two-col"><div class="panel">${timeChart}</div><div class="panel"><div class="panel-title">Tool Errors Encountered</div>${barChart('Tool errors', insights.toolErrorCategories)}</div></div></section><section id="impressive-things"><h2>Impressive Things You Did</h2><p class="muted">${escapeHtml(working.intro ?? '')}</p>${sectionCards(working.impressiveWorkflows, (workflow) => `<article class="prose-card"><h3>${escapeHtml(workflow.title)}</h3><p>${escapeHtml(workflow.description)}</p>${evidence(workflow.evidenceSessionIds)}</article>`)}</section><section><h2>What Helped Most</h2><div class="two-col"><div class="panel">${barChart('Helpfulness', insights.helpfulness)}</div><div class="panel"><div class="panel-title">Outcomes</div>${barChart('Outcomes', insights.outcomes, { order: outcomeOrder })}</div></div></section><section id="where-things-go-wrong"><h2>Where Things Go Wrong</h2><p class="muted">${escapeHtml(friction.intro ?? '')}</p>${sectionCards(friction.categories, (category) => `<article class="prose-card"><h3>${escapeHtml(category.category)}</h3><p>${escapeHtml(category.description)}</p>${(category.examples ?? []).map((example) => `<div class="callout">${escapeHtml(example.text)}${evidence(example.evidenceSessionIds)}</div>`).join('')}</article>`)}</section><section><h2>Primary Friction Types</h2><div class="two-col"><div class="panel">${barChart('Friction types', insights.friction)}</div><div class="panel"><div class="panel-title">Inferred Satisfaction</div>${barChart('Satisfaction', insights.satisfaction, { order: satisfactionOrder })}</div></div></section><section id="features-to-try"><h2>Existing Agent Features to Try</h2><h3>Suggested Instruction Additions</h3>${sectionCards(suggestions.instructionAdditions, (item) => `<article class="prose-card"><p>${escapeHtml(item.addition)}</p><p class="muted">${escapeHtml(item.why)}</p><div class="copy">${escapeHtml(item.promptScaffold)}</div>${evidence(item.evidenceSessionIds)}</article>`)}<h3>Features to Try</h3>${sectionCards(suggestions.featuresToTry, (item) => `<article class="prose-card"><h3>${escapeHtml(item.feature)}</h3><p>${escapeHtml(item.oneLiner)} ${escapeHtml(item.whyForYou)}</p><div class="copy">${escapeHtml(item.exampleCode)}</div>${evidence(item.evidenceSessionIds)}</article>`)}</section><section id="new-usage-patterns"><h2>New Ways to Use Your Agent</h2>${sectionCards(suggestions.usagePatterns, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.suggestion)} ${escapeHtml(item.detail)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${evidence(item.evidenceSessionIds)}</article>`)}</section><section id="on-the-horizon"><h2>On the Horizon</h2><p class="muted">${escapeHtml(horizon.intro ?? '')}</p>${sectionCards(horizon.opportunities, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.whatsPossible)} ${escapeHtml(item.howToTry)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${evidence(item.evidenceSessionIds)}</article>`)}</section><section><h2>${escapeHtml(ending.headline ?? 'A memorable moment')}</h2><article class="panel"><p>${escapeHtml(ending.detail ?? 'No qualitative moment was available.')}</p>${evidence(ending.evidenceSessionIds)}</article></section><section><h2>Read coverage</h2><p class="muted">${escapeHtml(projectFilterNote(report))}</p><div class="table-wrap"><table><thead><tr><th>Source</th><th>Coverage</th><th>Found</th><th>Selected</th><th>Limited</th><th>Partial</th><th>Skipped</th><th>Notes</th></tr></thead><tbody>${coverageRows}</tbody></table></div></section>${timezoneScript}</body></html>`;
 }
 
 export async function writeReport(report, outputDirectory) {
   await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
   await chmod(outputDirectory, 0o700);
+  const timestamp = new Date(report.generatedAt).toISOString().replace(/T/, '-').replace(/:/g, '').slice(0, 17);
   const files = {
     json: join(outputDirectory, 'report.json'),
     markdown: join(outputDirectory, 'report.md'),
     html: join(outputDirectory, 'report.html'),
+    timestampedHtml: join(outputDirectory, `report-${timestamp}.html`),
     prompt: join(outputDirectory, 'agent-prompt.md')
   };
+  const html = renderHtml(report);
   await Promise.all([
     writeFile(files.json, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 }),
     writeFile(files.markdown, renderMarkdown(report), { mode: 0o600 }),
-    writeFile(files.html, renderHtml(report), { mode: 0o600 }),
+    writeFile(files.html, html, { mode: 0o600 }),
+    writeFile(files.timestampedHtml, html, { mode: 0o600 }),
     writeFile(files.prompt, renderAgentPrompt(report), { mode: 0o600 })
   ]);
   await Promise.all(Object.values(files).map((file) => chmod(file, 0o600)));

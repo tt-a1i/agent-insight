@@ -1,5 +1,7 @@
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { basename } from 'node:path';
 
 const execFileAsync = promisify(execFile);
 
@@ -12,6 +14,44 @@ function iso(value) {
 function increment(object, key) {
   if (!key || typeof key !== 'string') return;
   object[key] = (object[key] ?? 0) + 1;
+}
+
+function addAnalysisMessage(messages, role, text, limit) {
+  if (typeof text !== 'string' || !text.trim()) return false;
+  messages.push({ index: messages.length + 1, role, text: text.trim().slice(0, limit) });
+  return true;
+}
+
+export function openCodeAnalysisInput(document) {
+  const info = document?.info ?? {};
+  const messages = [];
+  let userMessageCount = 0;
+  for (const message of document?.messages ?? []) {
+    const role = String(message?.info?.role ?? '').toLowerCase();
+    let userText = false;
+    for (const part of message?.parts ?? []) {
+      if (part?.type === 'text' && (role === 'user' || role === 'assistant')) {
+        const added = addAnalysisMessage(messages, role, part.text, role === 'user' ? 500 : 300);
+        if (role === 'user') userText ||= added;
+      }
+      if (part?.type === 'tool') addAnalysisMessage(messages, 'tool', part.tool ?? 'unknown', 120);
+    }
+    if (userText) userMessageCount += 1;
+  }
+  if (messages.length === 0) throw new Error('OpenCode export contains no analyzable messages.');
+  const created = Date.parse(iso(info.time?.created));
+  const updated = Date.parse(iso(info.time?.updated));
+  const sessionId = String(info.id ?? 'unknown-opencode-session');
+  return {
+    source: 'opencode',
+    opaqueId: createHash('sha256').update(`opencode\u0000${sessionId}`).digest('hex').slice(0, 24),
+    contentHash: createHash('sha256').update(JSON.stringify(document)).digest('hex'),
+    date: Number.isFinite(created) ? new Date(created).toISOString().slice(0, 10) : null,
+    projectLabel: info.directory ? basename(String(info.directory).replace(/[\\/]+$/, '')) : 'unknown',
+    userMessageCount,
+    durationMinutes: Number.isFinite(created) && Number.isFinite(updated) && updated >= created ? Math.round((updated - created) / 60_000) : 0,
+    messages
+  };
 }
 
 /**
@@ -81,6 +121,21 @@ async function defaultRunner(args, { cwd, env }) {
   return stdout;
 }
 
+function requireSessionId(value) {
+  const sessionId = String(value ?? '');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(sessionId)) throw new Error('Invalid OpenCode session id.');
+  return sessionId;
+}
+
+export async function exportOpenCodeSession({ sessionId, cwd = process.cwd(), env = process.env, runner = defaultRunner }) {
+  const document = JSON.parse(await runner(['export', requireSessionId(sessionId), '--sanitize'], { cwd, env }));
+  return {
+    document,
+    session: normaliseOpenCodeExport(document, { id: sessionId }),
+    input: openCodeAnalysisInput(document)
+  };
+}
+
 /**
  * Uses only OpenCode's public CLI surface. Session list deliberately returns
  * root sessions, so the coverage result makes that limitation explicit.
@@ -121,7 +176,12 @@ export async function collectOpenCodeSessions({
     const results = await Promise.all(batch.map(async (listedSession) => {
       try {
         const exported = JSON.parse(await runner(['export', listedSession.id, '--sanitize'], { cwd, env }));
-        return normaliseOpenCodeExport(exported, listedSession);
+        const session = normaliseOpenCodeExport(exported, listedSession);
+        Object.defineProperty(session, 'analysisLocator', {
+          value: { kind: 'opencode', sessionId: String(listedSession.id), cwd },
+          enumerable: false
+        });
+        return session;
       } catch {
         return null;
       }

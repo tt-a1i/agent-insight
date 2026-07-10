@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { collectOpenCodeSessions, normaliseOpenCodeExport } from '../src/opencode.mjs';
+import { collectOpenCodeSessions, normaliseOpenCodeExport, openCodeAnalysisInput } from '../src/opencode.mjs';
 import { AGENTS, installIntegration, integrationPath, renderIntegration } from '../src/integrations.mjs';
 import { summarizeSessions } from '../src/analyze.mjs';
 
@@ -47,6 +47,26 @@ test('uses the official OpenCode CLI contract and declares root-session coverage
   assert.equal(result.diagnostic.coverage, 'root_sessions_only');
   assert.deepEqual(invocations[0], ['session', 'list', '--format', 'json', '--max-count', '10']);
   assert.deepEqual(invocations[1], ['export', 'ses-1', '--sanitize']);
+  assert.deepEqual(result.sessions[0].analysisLocator, { kind: 'opencode', sessionId: 'ses-1', cwd: process.cwd() });
+});
+
+test('builds bounded OpenCode semantic input without tool payloads', () => {
+  const input = openCodeAnalysisInput({
+    info: { id: 'ses-semantic', directory: '/work/demo', time: { created: 1_783_000_000_000, updated: 1_783_000_120_000 } },
+    messages: [
+      { info: { role: 'user', time: { created: 1_783_000_000_000 } }, parts: [{ type: 'text', text: 'Explain this failure' }] },
+      { info: { role: 'assistant', time: { created: 1_783_000_120_000 } }, parts: [{ type: 'text', text: 'I found it' }, { type: 'tool', tool: 'bash', state: { input: { command: 'private-command' }, output: 'private-output' } }] }
+    ]
+  });
+  assert.equal(input.userMessageCount, 1);
+  assert.equal(input.durationMinutes, 2);
+  assert.deepEqual(input.messages, [
+    { index: 1, role: 'user', text: 'Explain this failure' },
+    { index: 2, role: 'assistant', text: 'I found it' },
+    { index: 3, role: 'tool', text: 'bash' }
+  ]);
+  assert.equal(JSON.stringify(input).includes('private-command'), false);
+  assert.equal(JSON.stringify(input).includes('private-output'), false);
 });
 
 test('installs a real Pi slash-command extension and protects existing files', async () => {
@@ -55,7 +75,8 @@ test('installs a real Pi slash-command extension and protects existing files', a
   assert.equal(target, integrationPath({ agent: 'pi', scope: 'project', cwd: root, home: root }));
   const content = await readFile(target, 'utf8');
   assert.match(content, /registerCommand\("agent-insights"/);
-  assert.match(content, /--source", "pi"/);
+  assert.match(content, /ctx\.ui\.select\("Agent scope"/);
+  assert.match(content, /\["prepare", "--host", "pi", "--source", sources/);
   assert.ok(content.includes('\nexport default function'));
   assert.equal(content.includes('\\nexport default function'), false);
   await assert.rejects(() => installIntegration({ agent: 'pi', scope: 'project', cwd: root, home: root }), /already exists/);
@@ -66,12 +87,15 @@ test('installs Codex skills in the shared .agents skill surface', () => {
   assert.equal(path, '/tmp/project/.agents/skills/agent-insights/SKILL.md');
 });
 
-test('host bridges invoke their own source instead of an indiscriminate auto scan', () => {
+test('host bridges prepare semantic runs for their active model', () => {
   assert.deepEqual(AGENTS, ['claude', 'codex', 'cursor', 'opencode', 'pi']);
-  assert.match(renderIntegration('claude'), /--source claude --project/);
-  assert.match(renderIntegration('codex'), /--source codex --project/);
-  assert.match(renderIntegration('opencode'), /--source opencode --project/);
-  assert.match(renderIntegration('cursor'), /--source cursor/);
-  assert.doesNotMatch(renderIntegration('cursor'), /--source cursor --project/);
+  assert.match(renderIntegration('claude'), /agent-insight prepare --host claude --source/);
+  assert.match(renderIntegration('codex'), /agent-insight prepare --host codex --source/);
+  assert.match(renderIntegration('opencode'), /agent-insight prepare --host opencode --source/);
+  assert.match(renderIntegration('cursor'), /agent-insight prepare --host cursor --source/);
+  assert.doesNotMatch(renderIntegration('claude'), /claude\s+(?:-p|--print)/i);
+  assert.doesNotMatch(renderIntegration('codex'), /codex\s+exec/i);
+  assert.doesNotMatch(renderIntegration('opencode'), /opencode\s+run/i);
+  assert.doesNotMatch(renderIntegration('cursor'), /cursor-agent\s+(?:-p|--print)/i);
   assert.throws(() => renderIntegration('groq'), /Unknown host agent/);
 });

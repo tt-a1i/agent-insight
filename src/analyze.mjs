@@ -1,4 +1,5 @@
 import { basename } from 'node:path';
+import { AGGREGATE_TASKS } from './aggregate-protocol.mjs';
 
 const dateOnly = (value) => value ? value.slice(0, 10) : null;
 const number = (value) => new Intl.NumberFormat('en-US').format(value);
@@ -15,6 +16,158 @@ function sortEntries(object, limit = 8) {
     .sort(([, left], [, right]) => right - left)
     .slice(0, limit)
     .map(([name, count]) => ({ name, count }));
+}
+
+function addCounts(target, counts) {
+  for (const [name, count] of Object.entries(counts ?? {})) target[name] = (target[name] ?? 0) + (Number(count) || 0);
+}
+
+function increment(target, name) {
+  if (name) target[name] = (target[name] ?? 0) + 1;
+}
+
+function rounded(value, digits = 2) {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function responseStats(values) {
+  const sorted = values.filter(Number.isFinite).sort((left, right) => left - right);
+  if (sorted.length === 0) return { median: null, average: null };
+  return {
+    median: sorted[Math.floor(sorted.length / 2)],
+    average: rounded(sorted.reduce((sum, value) => sum + value, 0) / sorted.length, 1)
+  };
+}
+
+function multiClauding(sessions) {
+  const events = sessions.flatMap((session) => (session.userMessageTimestamps ?? []).map((timestamp) => ({ session: session.id, time: Date.parse(timestamp) }))).filter((event) => Number.isFinite(event.time)).sort((left, right) => left.time - right.time);
+  const pairs = new Set();
+  const involved = new Set();
+  const overlappingEvents = new Set();
+  for (let left = 0; left < events.length; left += 1) {
+    for (let right = left + 1; right < events.length && events[right].time - events[left].time <= 30 * 60 * 1000; right += 1) {
+      if (events[left].session === events[right].session) continue;
+      const pair = [events[left].session, events[right].session].sort().join(':');
+      pairs.add(pair);
+      involved.add(events[left].session);
+      involved.add(events[right].session);
+      overlappingEvents.add(left);
+      overlappingEvents.add(right);
+    }
+  }
+  return {
+    overlapEvents: pairs.size,
+    sessionsInvolved: involved.size,
+    userMessagesDuring: overlappingEvents.size
+  };
+}
+
+function buildInsightsAggregate(sessions, semantic, sourcesScanned) {
+  const toolCounts = {};
+  const languages = {};
+  const projects = {};
+  const toolErrorCategories = {};
+  const messageHours = {};
+  const responseTimes = [];
+  let durationMinutes = 0;
+  const totals = {
+    gitCommits: 0,
+    gitPushes: 0,
+    interruptions: 0,
+    toolErrors: 0,
+    linesAdded: 0,
+    linesRemoved: 0,
+    filesModified: 0,
+    taskAgentSessions: 0,
+    mcpSessions: 0,
+    webSearchSessions: 0,
+    webFetchSessions: 0
+  };
+  for (const session of sessions) {
+    addCounts(toolCounts, session.toolNames);
+    addCounts(languages, session.languages);
+    addCounts(toolErrorCategories, session.toolErrorCategories);
+    addCounts(messageHours, session.messageHours);
+    responseTimes.push(...(session.userResponseTimes ?? []));
+    projects[labelProject(session.project)] = (projects[labelProject(session.project)] ?? 0) + 1;
+    const start = Date.parse(session.startedAt);
+    const end = Date.parse(session.endedAt);
+    if (Number.isFinite(start) && Number.isFinite(end) && end >= start) durationMinutes += Math.round((end - start) / 60_000);
+    totals.gitCommits += session.gitCommits ?? 0;
+    totals.gitPushes += session.gitPushes ?? 0;
+    totals.interruptions += session.userInterruptions ?? 0;
+    totals.toolErrors += session.toolErrors ?? 0;
+    totals.linesAdded += session.linesAdded ?? 0;
+    totals.linesRemoved += session.linesRemoved ?? 0;
+    totals.filesModified += session.filesModified ?? 0;
+    totals.taskAgentSessions += session.usesTaskAgent ? 1 : 0;
+    totals.mcpSessions += session.usesMcp ? 1 : 0;
+    totals.webSearchSessions += session.usesWebSearch ? 1 : 0;
+    totals.webFetchSessions += session.usesWebFetch ? 1 : 0;
+  }
+  const goalCategories = {};
+  const outcomes = {};
+  const satisfaction = {};
+  const helpfulness = {};
+  const sessionTypes = {};
+  const friction = {};
+  const primarySuccesses = {};
+  const semanticSessions = semantic?.sessions ?? [];
+  for (const { facet } of semanticSessions) {
+    if (!facet) continue;
+    addCounts(goalCategories, facet.goalCategories);
+    increment(outcomes, facet.outcome);
+    addCounts(satisfaction, facet.userSatisfactionCounts);
+    increment(helpfulness, facet.agentHelpfulness);
+    increment(sessionTypes, facet.sessionType);
+    addCounts(friction, facet.frictionCounts);
+    increment(primarySuccesses, facet.primarySuccess);
+  }
+  const days = new Set(sessions.map((session) => dateOnly(session.startedAt)).filter(Boolean));
+  const userMessages = sessions.reduce((sum, session) => sum + session.userMessages, 0);
+  const response = responseStats(responseTimes);
+  const filesScanned = sourcesScanned.reduce((sum, source) => sum + (source.filesFound ?? 0), 0);
+  return {
+    totalSessions: sessions.length,
+    totalSessionsScanned: Math.max(sessions.length, filesScanned),
+    sessionsWithFacets: semanticSessions.filter((session) => session.facet).length,
+    dateRange: sessions.length ? { start: dateOnly(sessions[0].startedAt), end: dateOnly(sessions.at(-1).endedAt) } : { start: null, end: null },
+    totalMessages: userMessages,
+    totalDurationHours: rounded(durationMinutes / 60),
+    totalInputTokens: sessions.reduce((sum, session) => sum + (session.inputTokens ?? 0), 0),
+    totalOutputTokens: sessions.reduce((sum, session) => sum + (session.outputTokens ?? 0), 0),
+    toolCounts,
+    languages,
+    gitCommits: totals.gitCommits,
+    gitPushes: totals.gitPushes,
+    projects,
+    goalCategories,
+    outcomes,
+    satisfaction,
+    helpfulness,
+    sessionTypes,
+    friction,
+    primarySuccesses,
+    sessionSummaries: semanticSessions.filter((session) => session.facet).map((session) => ({ id: session.id, date: session.date, summary: session.facet.briefSummary, underlyingGoal: session.facet.underlyingGoal })),
+    totalInterruptions: totals.interruptions,
+    totalToolErrors: totals.toolErrors,
+    toolErrorCategories,
+    userResponseTimes: responseTimes,
+    medianResponseTime: response.median,
+    averageResponseTime: response.average,
+    sessionsUsingTaskAgent: totals.taskAgentSessions,
+    sessionsUsingMcp: totals.mcpSessions,
+    sessionsUsingWebSearch: totals.webSearchSessions,
+    sessionsUsingWebFetch: totals.webFetchSessions,
+    totalLinesAdded: totals.linesAdded,
+    totalLinesRemoved: totals.linesRemoved,
+    totalFilesModified: totals.filesModified,
+    daysActive: days.size,
+    messagesPerDay: days.size ? rounded(userMessages / days.size, 1) : 0,
+    messageHours,
+    multiClauding: multiClauding(sessions)
+  };
 }
 
 function buildObservations(totals, sourceCount, projects, sessions) {
@@ -88,7 +241,7 @@ function buildRecommendations(totals, projects, sourceCount) {
   return recommendations.slice(0, 3);
 }
 
-export function summarizeSessions(sessions, { days = 30, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 } } = {}) {
+export function summarizeSessions(sessions, { days = 30, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 }, semantic = null, eligibility = null } = {}) {
   const ordered = [...sessions].sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
   const sourceMap = {};
   const projects = {};
@@ -128,6 +281,8 @@ export function summarizeSessions(sessions, { days = 30, sourcesScanned = [], pr
     : { start: null, end: null };
   const projectEntries = sortEntries(projects);
   const sourceCount = Object.keys(sourceMap).length;
+  const sections = semantic?.sections ?? {};
+  const missingSections = AGGREGATE_TASKS.filter((section) => sections[section] === undefined);
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
@@ -136,7 +291,12 @@ export function summarizeSessions(sessions, { days = 30, sourcesScanned = [], pr
       rawTranscriptWritten: false,
       note: 'This report contains derived metadata only. It does not include prompt text, tool output, source code, file paths, or session IDs.'
     },
-    coverage: { requestedDays: days === Infinity ? 'all available' : days, sourcesScanned, projectFilter },
+    parity: {
+      target: 'claude-code/2.1.206',
+      structuralStatus: missingSections.length === 0 ? 'complete' : 'partial',
+      missingSections
+    },
+    coverage: { requestedDays: days === Infinity ? 'all available' : days, sourcesScanned, projectFilter, eligibility },
     dateRange,
     totals,
     sources: sourceMap,
@@ -144,6 +304,12 @@ export function summarizeSessions(sessions, { days = 30, sourcesScanned = [], pr
     topTools: sortEntries(tools),
     providers: sortEntries(providers),
     models: sortEntries(models),
+    insights: buildInsightsAggregate(ordered, semantic, sourcesScanned),
+    semantic: {
+      enabled: Boolean(semantic),
+      analyzer: semantic?.analyzer ?? null,
+      sections
+    },
     observations: buildObservations(totals, sourceCount, projectEntries, ordered),
     recommendations: buildRecommendations(totals, projectEntries, sourceCount)
   };

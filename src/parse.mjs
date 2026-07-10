@@ -59,6 +59,76 @@ function increment(object, key, amount = 1) {
   object[key] = (object[key] ?? 0) + amount;
 }
 
+const LANGUAGE_BY_EXTENSION = new Map([
+  ['.ts', 'TypeScript'], ['.tsx', 'TypeScript'], ['.js', 'JavaScript'], ['.jsx', 'JavaScript'],
+  ['.py', 'Python'], ['.rb', 'Ruby'], ['.go', 'Go'], ['.rs', 'Rust'], ['.java', 'Java'],
+  ['.c', 'C'], ['.h', 'C'], ['.cpp', 'C++'], ['.cc', 'C++'], ['.cxx', 'C++'],
+  ['.hpp', 'C++'], ['.hh', 'C++'], ['.hxx', 'C++'], ['.ipp', 'C++'], ['.md', 'Markdown'],
+  ['.json', 'JSON'], ['.yaml', 'YAML'], ['.yml', 'YAML'], ['.sh', 'Shell'], ['.css', 'CSS'],
+  ['.html', 'HTML']
+]);
+
+function contentText(content, types = new Set(['text', 'input_text', 'output_text'])) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.filter(isObject).filter((block) => types.has(String(block.type ?? '').toLowerCase())).map((block) => block.text ?? '').filter((text) => typeof text === 'string').join('\n');
+}
+
+function toolResultText(block) {
+  if (typeof block.content === 'string') return block.content;
+  return contentText(block.content);
+}
+
+function classifyToolError(text) {
+  const value = String(text ?? '').toLowerCase();
+  if (value.includes('exit code')) return 'Command Failed';
+  if (value.includes('rejected') || value.includes("doesn't want")) return 'User Rejected';
+  if (value.includes('string to replace not found') || value.includes('no changes')) return 'Edit Failed';
+  if (value.includes('modified since read')) return 'File Changed';
+  if (value.includes('exceeds maximum') || value.includes('too large')) return 'File Too Large';
+  if (value.includes('file not found') || value.includes('does not exist')) return 'File Not Found';
+  return 'Other';
+}
+
+function lineDiffCounts(oldText, newText) {
+  const oldLines = String(oldText ?? '').split('\n');
+  const newLines = String(newText ?? '').split('\n');
+  if (oldLines.length * newLines.length > 100_000) return { added: newLines.length, removed: oldLines.length };
+  const previous = new Array(newLines.length + 1).fill(0);
+  for (const oldLine of oldLines) {
+    let diagonal = 0;
+    for (let index = 1; index <= newLines.length; index += 1) {
+      const above = previous[index];
+      previous[index] = oldLine === newLines[index - 1] ? diagonal + 1 : Math.max(previous[index], previous[index - 1]);
+      diagonal = above;
+    }
+  }
+  const common = previous.at(-1);
+  return { added: newLines.length - common, removed: oldLines.length - common };
+}
+
+function observeTool(session, name, input = {}) {
+  const toolName = firstString(name, 'unknown');
+  session.toolCalls += 1;
+  increment(session.toolNames, toolName);
+  const command = typeof input.command === 'string' ? input.command : '';
+  if (/\bgit\s+commit\b/.test(command)) session.gitCommits += 1;
+  if (/\bgit\s+push\b/.test(command)) session.gitPushes += 1;
+  if (/^(Task|Agent)$/i.test(toolName)) session.usesTaskAgent = true;
+  if (/^mcp__/i.test(toolName)) session.usesMcp = true;
+  if (/^WebSearch$/i.test(toolName)) session.usesWebSearch = true;
+  if (/^WebFetch$/i.test(toolName)) session.usesWebFetch = true;
+  const filePath = firstString(input.file_path, input.filePath, input.path);
+  if (filePath) increment(session.languages, LANGUAGE_BY_EXTENSION.get(extname(filePath).toLowerCase()));
+  if (filePath && /^(Edit|Write)$/i.test(toolName)) session._modifiedFiles.add(filePath);
+  if (/^Write$/i.test(toolName) && typeof input.content === 'string') session.linesAdded += input.content.split('\n').length;
+  if (/^Edit$/i.test(toolName)) {
+    const difference = lineDiffCounts(input.old_string, input.new_string);
+    session.linesAdded += difference.added;
+    session.linesRemoved += difference.removed;
+  }
+}
+
 function countContentTools(content, session) {
   if (!Array.isArray(content)) return;
   for (const block of content) {
@@ -66,11 +136,11 @@ function countContentTools(content, session) {
     const type = String(block.type ?? '').toLowerCase();
     if (type === 'tool_result' && (block.is_error || block.error)) {
       session.toolErrors += 1;
+      increment(session.toolErrorCategories, classifyToolError(toolResultText(block)));
       continue;
     }
     if (!/(tool_use|tool_call|toolcall|function_call)/.test(type)) continue;
-    session.toolCalls += 1;
-    increment(session.toolNames, firstString(block.name, block.tool_name, block.function?.name, 'unknown'));
+    observeTool(session, firstString(block.name, block.tool_name, block.function?.name, 'unknown'), block.input ?? block.arguments ?? block.function?.arguments ?? {});
     if (block.is_error || block.error) session.toolErrors += 1;
   }
 }
@@ -121,15 +191,31 @@ function observeRecord(session, record) {
   // Codex records both event_msg.user_message and response_item.message. The
   // former is lifecycle telemetry; counting it would double-count a user turn.
   const isLifecycleEvent = recordType === 'event_msg';
-  const isUser = !isLifecycleEvent && (role === 'user' || recordType === 'user' || itemType === 'user_message');
+  const userText = contentText(item.content);
+  const isUser = !isLifecycleEvent && Boolean(userText.trim()) && (role === 'user' || recordType === 'user' || itemType === 'user_message');
   const isAssistant = !isLifecycleEvent && (role === 'assistant' || recordType === 'assistant' || itemType === 'assistant_message');
-  if (isUser) session.userMessages += 1;
-  if (isAssistant) session.assistantMessages += 1;
+  const timestamp = firstDate(record);
+  if (isUser) {
+    session.userMessages += 1;
+    if (userText.includes('[Request interrupted by user')) session.userInterruptions += 1;
+    if (timestamp) {
+      session.userMessageTimestamps.push(timestamp);
+      increment(session.messageHours, new Date(timestamp).getUTCHours());
+      if (session._lastAssistantTimestamp) {
+        const responseSeconds = (Date.parse(timestamp) - Date.parse(session._lastAssistantTimestamp)) / 1000;
+        if (responseSeconds > 2 && responseSeconds < 3600) session.userResponseTimes.push(responseSeconds);
+      }
+    }
+    session._lastAssistantTimestamp = null;
+  }
+  if (isAssistant) {
+    session.assistantMessages += 1;
+    if (timestamp) session._lastAssistantTimestamp = timestamp;
+  }
 
   const isTool = /(tool_use|tool_call|toolcall|function_call|custom_tool_call|tool_search_call|web_search_call)/.test(itemType) || /^(tool_use|tool_call|toolcall|function_call|custom_tool_call|tool_search_call|web_search_call)$/.test(recordType);
   if (isTool) {
-    session.toolCalls += 1;
-    increment(session.toolNames, firstString(item.name, item.tool_name, item.function?.name, record.name, 'unknown'));
+    observeTool(session, firstString(item.name, item.tool_name, item.function?.name, record.name, 'unknown'), item.input ?? item.arguments ?? item.function?.arguments ?? {});
   } else {
     countContentTools(item.content, session);
   }
@@ -177,6 +263,21 @@ function emptySession(filePath, source) {
     inputTokens: 0,
     outputTokens: 0,
     toolNames: {},
+    languages: {},
+    gitCommits: 0,
+    gitPushes: 0,
+    userInterruptions: 0,
+    userResponseTimes: [],
+    toolErrorCategories: {},
+    usesTaskAgent: false,
+    usesMcp: false,
+    usesWebSearch: false,
+    usesWebFetch: false,
+    linesAdded: 0,
+    linesRemoved: 0,
+    filesModified: 0,
+    messageHours: {},
+    userMessageTimestamps: [],
     providers: {},
     models: {},
     partial: false,
@@ -185,7 +286,9 @@ function emptySession(filePath, source) {
     recognizedRecords: 0,
     malformedRecords: 0,
     hasBranches: false,
-    parentCounts: {}
+    parentCounts: {},
+    _modifiedFiles: new Set(),
+    _lastAssistantTimestamp: null
   };
 }
 
@@ -209,10 +312,16 @@ function importSnapshotSession(document, filePath, source) {
   session.project = null;
   session.startedAt = normaliseDate(cached.startedAt);
   session.endedAt = normaliseDate(cached.endedAt);
-  for (const field of ['userMessages', 'assistantMessages', 'toolCalls', 'toolErrors', 'turnFailures', 'inputTokens', 'outputTokens', 'recordsRead']) {
+  for (const field of ['userMessages', 'assistantMessages', 'toolCalls', 'toolErrors', 'turnFailures', 'inputTokens', 'outputTokens', 'recordsRead', 'gitCommits', 'gitPushes', 'userInterruptions', 'linesAdded', 'linesRemoved', 'filesModified']) {
     session[field] = nonNegativeNumber(cached[field]);
   }
   session.toolNames = metadataCounts(cached.toolNames);
+  session.languages = metadataCounts(cached.languages);
+  session.toolErrorCategories = metadataCounts(cached.toolErrorCategories);
+  session.messageHours = metadataCounts(cached.messageHours);
+  session.userResponseTimes = Array.isArray(cached.userResponseTimes) ? cached.userResponseTimes.map(nonNegativeNumber) : [];
+  session.userMessageTimestamps = Array.isArray(cached.userMessageTimestamps) ? cached.userMessageTimestamps.filter((value) => normaliseDate(value)).map(normaliseDate) : [];
+  for (const field of ['usesTaskAgent', 'usesMcp', 'usesWebSearch', 'usesWebFetch']) session[field] = Boolean(cached[field]);
   session.providers = metadataCounts(cached.providers);
   session.models = metadataCounts(cached.models);
   session.partial = Boolean(cached.partial);
@@ -357,11 +466,14 @@ export async function parseSessionFile(file, source, {
   const fallback = fileStat.mtime.toISOString();
   session.startedAt ??= fallback;
   session.endedAt ??= fallback;
+  session.filesModified ||= session._modifiedFiles.size;
   const boundedBeforeRecognition = session.partial && ['byte_limit', 'record_limit', 'event_limit'].includes(session.partialReason);
   if (session.recognizedRecords === 0 && !boundedBeforeRecognition) {
     throw new TranscriptParseError(`${basename(filePath)} did not contain a recognized session record.`);
   }
   delete session._fallbackId;
   delete session.parentCounts;
+  delete session._modifiedFiles;
+  delete session._lastAssistantTimestamp;
   return session;
 }

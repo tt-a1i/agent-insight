@@ -62,8 +62,18 @@ async function findCursorTranscriptRoots(projectRoots) {
   return { roots, errors };
 }
 
-async function selectFilesForWindow(files, { days, now, maxSessions }) {
-  const cutoff = days === Infinity ? -Infinity : now - days * 86_400_000;
+function timeBounds({ days, now, start, end }) {
+  if (start || end) {
+    return {
+      earliest: start ? Date.parse(`${start}T00:00:00.000Z`) : -Infinity,
+      latest: end ? Date.parse(`${end}T23:59:59.999Z`) : Infinity
+    };
+  }
+  return { earliest: days === Infinity ? -Infinity : now - days * 86_400_000, latest: Infinity };
+}
+
+async function selectFilesForWindow(files, { days, now, start, end, maxSessions }) {
+  const { earliest, latest } = timeBounds({ days, now, start, end });
   let statErrors = 0;
   const candidates = await Promise.all(files.map(async (path) => {
     try {
@@ -75,7 +85,7 @@ async function selectFilesForWindow(files, { days, now, maxSessions }) {
     }
   }));
   const readable = candidates.filter(Boolean);
-  const withinWindow = readable.filter((file) => file.mtime >= cutoff).sort((left, right) => right.mtime - left.mtime);
+  const withinWindow = readable.filter((file) => file.mtime >= earliest && file.mtime <= latest).sort((left, right) => right.mtime - left.mtime);
   return {
     files: withinWindow.slice(0, maxSessions).map((file) => file.path),
     filesFound: readable.length,
@@ -173,7 +183,9 @@ async function parseFiles(files, source, limits) {
     const batch = files.slice(index, index + batchSize);
     const outcomes = await Promise.all(batch.map(async (file) => {
       try {
-        return { file, session: await parseSessionFile(file, source, limits) };
+        const session = await parseSessionFile(file, source, limits);
+        if (session) Object.defineProperty(session, 'analysisLocator', { value: { kind: 'file', path: file }, enumerable: false });
+        return { file, session };
       } catch (error) {
         return { file, error };
       }
@@ -197,10 +209,10 @@ function sessionMatchesProject(session, project) {
   return normalizedSession === normalizedProject || normalizedSession.startsWith(`${normalizedProject}/`);
 }
 
-function sessionIsWithinDays(session, days, now) {
-  if (days === Infinity) return true;
+function sessionIsWithinWindow(session, { days, now, start, end }) {
+  const { earliest, latest } = timeBounds({ days, now, start, end });
   const timestamp = Date.parse(session.endedAt ?? session.startedAt);
-  return Number.isFinite(timestamp) && timestamp >= now - days * 86_400_000;
+  return Number.isFinite(timestamp) && timestamp >= earliest && timestamp <= latest;
 }
 
 function mergeSession(current, incoming) {
@@ -235,6 +247,8 @@ export async function collectSessions({
   env,
   inputFiles = [],
   days = 30,
+  start,
+  end,
   project,
   includeSubagents = false,
   maxFileBytes = 16 * 1024 * 1024,
@@ -279,7 +293,7 @@ export async function collectSessions({
       discoveryErrors += discovered.errors;
     }
     files = [...new Set(files)];
-    const selectedFiles = await selectFilesForWindow(files, { days, now, maxSessions: maxSessionsPerSource });
+    const selectedFiles = await selectFilesForWindow(files, { days, now, start, end, maxSessions: maxSessionsPerSource });
     const { sessions, failures } = await parseFiles(selectedFiles.files, source, { maxBytes: maxFileBytes, maxRecords, maxRecordBytes });
     allSessions.push(...sessions);
     diagnostics.push({
@@ -321,9 +335,10 @@ export async function collectSessions({
   }
   const deduplicated = [...unique.values()];
   const unknownProjectExcluded = project ? deduplicated.filter((session) => !session.project).length : 0;
-  const filtered = deduplicated.filter((session) => sessionMatchesProject(session, project) && sessionIsWithinDays(session, days, now));
+  const filtered = deduplicated.filter((session) => sessionMatchesProject(session, project) && sessionIsWithinWindow(session, { days, now, start, end }));
   return {
     sessions: filtered,
+    analysisCandidates: filtered.flatMap((session) => session.analysisLocator ? [{ source: session.source, locator: session.analysisLocator }] : []),
     diagnostics,
     sources: selected,
     projectFilter: project ? { requested: true, unknownProjectExcluded } : { requested: false, unknownProjectExcluded: 0 }

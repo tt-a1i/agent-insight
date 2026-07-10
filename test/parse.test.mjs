@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -32,6 +32,31 @@ test('parses Codex response_item records', async () => {
   assert.equal(session.assistantMessages, 1);
   assert.equal(session.toolCalls, 1);
   assert.equal(session.toolNames.exec_command, 1);
+});
+
+test('extracts Claude 2.1.206 deterministic insights metrics', async () => {
+  const session = await parseSessionFile(fixture('claude-parity.jsonl'), 'claude');
+
+  assert.equal(session.userMessages, 2);
+  assert.equal(session.assistantMessages, 2);
+  assert.equal(session.gitCommits, 1);
+  assert.equal(session.gitPushes, 1);
+  assert.equal(session.userInterruptions, 1);
+  assert.deepEqual(session.userResponseTimes, [10]);
+  assert.deepEqual(session.toolErrorCategories, { 'Command Failed': 1 });
+  assert.equal(session.usesTaskAgent, true);
+  assert.equal(session.usesMcp, true);
+  assert.equal(session.usesWebSearch, true);
+  assert.equal(session.usesWebFetch, false);
+  assert.equal(session.linesAdded, 2);
+  assert.equal(session.linesRemoved, 1);
+  assert.equal(session.filesModified, 1);
+  assert.deepEqual(session.languages, { TypeScript: 1 });
+  assert.deepEqual(session.messageHours, { 9: 2 });
+  assert.deepEqual(session.userMessageTimestamps, [
+    '2026-07-03T09:00:00.000Z',
+    '2026-07-03T09:02:10.000Z'
+  ]);
 });
 
 test('summarizes sessions and emits only metadata reports', async () => {
@@ -68,8 +93,31 @@ test('does not double-count Claude subagent journals by default', async () => {
   const defaultScan = await collectSessions({ sources: 'claude', home, cwd: home, days: Infinity });
   const fullScan = await collectSessions({ sources: 'claude', home, cwd: home, days: Infinity, includeSubagents: true });
   assert.equal(defaultScan.sessions.length, 1);
+  assert.deepEqual(defaultScan.analysisCandidates, [{
+    source: 'claude',
+    locator: { kind: 'file', path: join(project, 'main-session.jsonl') }
+  }]);
   assert.equal(fullScan.sessions.length, 1);
   assert.equal(fullScan.sessions[0].userMessages, 2);
+});
+
+test('filters discovery and parsed sessions by an inclusive custom date range', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agent-insight-date-range-'));
+  const project = join(home, '.claude', 'projects', 'encoded-project');
+  await mkdir(project, { recursive: true });
+  const record = (id, timestamp) => `${JSON.stringify({ type: 'user', timestamp, sessionId: id, message: { role: 'user', content: 'hello' } })}\n`;
+  const inside = join(project, 'inside.jsonl');
+  const outside = join(project, 'outside.jsonl');
+  await writeFile(inside, record('inside', '2026-07-03T12:00:00.000Z'));
+  await writeFile(outside, record('outside', '2026-06-30T12:00:00.000Z'));
+  await utimes(inside, new Date('2026-07-03T12:00:00.000Z'), new Date('2026-07-03T12:00:00.000Z'));
+  await utimes(outside, new Date('2026-06-30T12:00:00.000Z'), new Date('2026-06-30T12:00:00.000Z'));
+
+  const result = await collectSessions({
+    sources: 'claude', home, cwd: home, days: Infinity, start: '2026-07-03', end: '2026-07-03'
+  });
+  assert.deepEqual(result.sessions.map((session) => session.id), ['inside']);
+  assert.equal(result.diagnostics[0].filesWithinWindow, 1);
 });
 
 test('marks an oversized JSONL transcript as partial instead of reading it all', async () => {
@@ -110,7 +158,7 @@ test('limits discovery visibly and scans only Cursor agent-transcript JSONL', as
   const home = await mkdtemp(join(tmpdir(), 'agent-insight-cursor-'));
   const cursorRoot = join(home, '.cursor', 'projects', 'project-a', 'agent-transcripts', 'thread-a');
   await mkdir(cursorRoot, { recursive: true });
-  const session = `${JSON.stringify({ type: 'user', timestamp: '2026-07-01T00:00:00.000Z', message: { role: 'user' } })}\n`;
+  const session = `${JSON.stringify({ type: 'user', timestamp: '2026-07-01T00:00:00.000Z', message: { role: 'user', content: 'hello' } })}\n`;
   await writeFile(join(cursorRoot, 'session.jsonl'), session);
   await writeFile(join(home, '.cursor', 'projects', 'project-a', 'telemetry.jsonl'), session);
   const cursor = await collectSessions({ sources: 'cursor', home, cwd: home, days: Infinity });
@@ -119,8 +167,8 @@ test('limits discovery visibly and scans only Cursor agent-transcript JSONL', as
   const importRoot = join(home, '.agent-insight', 'imports', 'generic');
   await mkdir(importRoot, { recursive: true });
   await Promise.all([
-    writeFile(join(importRoot, 'one.json'), JSON.stringify({ type: 'user' })),
-    writeFile(join(importRoot, 'two.json'), JSON.stringify({ type: 'user' }))
+    writeFile(join(importRoot, 'one.json'), JSON.stringify({ type: 'user', content: 'hello' })),
+    writeFile(join(importRoot, 'two.json'), JSON.stringify({ type: 'user', content: 'hello' }))
   ]);
   const limited = await collectSessions({ sources: 'generic', home, cwd: home, days: Infinity, maxDiscoveryFiles: 1 });
   assert.equal(limited.diagnostics[0].discoveryTruncated, true);
