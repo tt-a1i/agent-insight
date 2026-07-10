@@ -1,0 +1,18 @@
+{
+  "name": "agent-insight",
+  "version": "0.1.0",
+  "description": "Local-first, cross-agent session insights",
+  "type": "module",
+  "bin": {
+    "agent-insight": "./bin/agent-insight.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check bin/agent-insight.mjs && node --check src/*.mjs",
+    "start": "node bin/agent-insight.mjs"
+  },
+  "license": "MIT"
+}
