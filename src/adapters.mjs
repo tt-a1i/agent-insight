@@ -73,7 +73,6 @@ function timeBounds({ days, now, start, end }) {
 }
 
 async function selectFilesForWindow(files, { days, now, start, end, maxSessions }) {
-  const { earliest, latest } = timeBounds({ days, now, start, end });
   let statErrors = 0;
   const candidates = await Promise.all(files.map(async (path) => {
     try {
@@ -85,12 +84,14 @@ async function selectFilesForWindow(files, { days, now, start, end, maxSessions 
     }
   }));
   const readable = candidates.filter(Boolean);
-  const withinWindow = readable.filter((file) => file.mtime >= earliest && file.mtime <= latest).sort((left, right) => right.mtime - left.mtime);
+  // mtime is only a discovery ordering hint. Restores, copies, migrations, and
+  // sync tools can change it independently of the session timestamps.
+  const ordered = readable.sort((left, right) => right.mtime - left.mtime);
   return {
-    files: withinWindow.slice(0, maxSessions).map((file) => file.path),
+    files: ordered.slice(0, maxSessions).map((file) => file.path),
     filesFound: readable.length,
-    filesWithinWindow: withinWindow.length,
-    filesLimited: Math.max(0, withinWindow.length - maxSessions),
+    filesWithinWindow: null,
+    filesLimited: Math.max(0, ordered.length - maxSessions),
     statErrors
   };
 }
@@ -178,13 +179,24 @@ export function resolveSources(requested = 'auto') {
 async function parseFiles(files, source, limits) {
   const sessions = [];
   const failures = { parse: 0, tooLarge: 0, partial: 0 };
-  const batchSize = 16;
+  // Claude branch selection needs a compact UUID topology per file before a
+  // second streaming pass can aggregate the winning leaf. Keep that bounded
+  // across large histories while other adapters retain the faster batch size.
+  const batchSize = source === 'claude' ? 2 : 16;
   for (let index = 0; index < files.length; index += batchSize) {
     const batch = files.slice(index, index + batchSize);
     const outcomes = await Promise.all(batch.map(async (file) => {
       try {
         const session = await parseSessionFile(file, source, limits);
-        if (session) Object.defineProperty(session, 'analysisLocator', { value: { kind: 'file', path: file }, enumerable: false });
+        if (session) {
+          const locator = { kind: 'file', path: file };
+          Object.defineProperties(locator, {
+            maxBytes: { value: limits.maxBytes, enumerable: false },
+            maxRecords: { value: limits.maxRecords, enumerable: false },
+            maxRecordBytes: { value: limits.maxRecordBytes, enumerable: false }
+          });
+          Object.defineProperty(session, 'analysisLocator', { value: locator, enumerable: false });
+        }
         return { file, session };
       } catch (error) {
         return { file, error };
@@ -237,6 +249,21 @@ function chooseRicherSession(current, incoming) {
   const incomingScore = (incoming.recordsRead ?? 0) * 10 + (incoming.assistantMessages ?? 0) + (incoming.toolCalls ?? 0);
   if (incomingScore !== currentScore) return incomingScore > currentScore ? incoming : current;
   return (incoming.endedAt ?? '') > (current.endedAt ?? '') ? incoming : current;
+}
+
+function sessionDurationMinutes(session) {
+  const start = Date.parse(session.startedAt);
+  const end = Date.parse(session.endedAt);
+  return Number.isFinite(start) && Number.isFinite(end) && end >= start
+    ? Math.round((end - start) / 60_000)
+    : 0;
+}
+
+function chooseClaudeSession(current, incoming) {
+  if (incoming.userMessages !== current.userMessages) {
+    return incoming.userMessages > current.userMessages ? incoming : current;
+  }
+  return sessionDurationMinutes(incoming) > sessionDurationMinutes(current) ? incoming : current;
 }
 
 /** Collects transcript-derived metadata. It intentionally never returns raw text. */
@@ -295,6 +322,7 @@ export async function collectSessions({
     files = [...new Set(files)];
     const selectedFiles = await selectFilesForWindow(files, { days, now, start, end, maxSessions: maxSessionsPerSource });
     const { sessions, failures } = await parseFiles(selectedFiles.files, source, { maxBytes: maxFileBytes, maxRecords, maxRecordBytes });
+    const sessionsWithinWindow = sessions.filter((session) => sessionIsWithinWindow(session, { days, now, start, end }));
     allSessions.push(...sessions);
     diagnostics.push({
       source,
@@ -303,7 +331,7 @@ export async function collectSessions({
       rootsFound: readableRoots.length,
       transcriptRootsFound: source === 'cursor' ? scanRoots.length : undefined,
       filesFound: selectedFiles.filesFound,
-      filesWithinWindow: selectedFiles.filesWithinWindow,
+      filesWithinWindow: sessionsWithinWindow.length,
       filesSelected: selectedFiles.files.length,
       filesLimited: selectedFiles.filesLimited,
       discoveryTruncated,
@@ -313,7 +341,11 @@ export async function collectSessions({
       filesSkipped: failures.parse + failures.tooLarge,
       filesPartial: failures.partial,
       filesTooLarge: failures.tooLarge,
-      coverage: readableRoots.length === 0 ? 'not_found' : selectedFiles.filesWithinWindow === 0 ? 'empty' : (failures.parse || failures.partial || failures.tooLarge || selectedFiles.filesLimited || discoveryTruncated || discoveryErrors || selectedFiles.statErrors) ? 'partial' : 'available'
+      coverage: readableRoots.length === 0
+        ? 'not_found'
+        : (failures.parse || failures.partial || failures.tooLarge || selectedFiles.filesLimited || discoveryTruncated || discoveryErrors || selectedFiles.statErrors)
+            ? 'partial'
+            : sessionsWithinWindow.length === 0 ? 'empty' : 'available'
     });
   }
 
@@ -329,6 +361,7 @@ export async function collectSessions({
     const key = `${session.source}:${session.id}`;
     if (!unique.has(key)) unique.set(key, session);
     else if (session.source === 'claude' && includeSubagents) unique.set(key, mergeSession(unique.get(key), session));
+    else if (session.source === 'claude') unique.set(key, chooseClaudeSession(unique.get(key), session));
     // Cursor may persist incremental copies of one conversation in more than
     // one project store; active/archive Codex duplicates have the same issue.
     else unique.set(key, chooseRicherSession(unique.get(key), session));
@@ -338,7 +371,7 @@ export async function collectSessions({
   const filtered = deduplicated.filter((session) => sessionMatchesProject(session, project) && sessionIsWithinWindow(session, { days, now, start, end }));
   return {
     sessions: filtered,
-    analysisCandidates: filtered.flatMap((session) => session.analysisLocator ? [{ source: session.source, locator: session.analysisLocator }] : []),
+    analysisCandidates: filtered.flatMap((session) => session.analysisLocator && !session.partial ? [{ source: session.source, locator: session.analysisLocator }] : []),
     diagnostics,
     sources: selected,
     projectFilter: project ? { requested: true, unknownProjectExcluded } : { requested: false, unknownProjectExcluded: 0 }

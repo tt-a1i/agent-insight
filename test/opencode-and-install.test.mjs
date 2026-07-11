@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -76,10 +76,40 @@ test('installs a real Pi slash-command extension and protects existing files', a
   const content = await readFile(target, 'utf8');
   assert.match(content, /registerCommand\("agent-insights"/);
   assert.match(content, /ctx\.ui\.select\("Agent scope"/);
-  assert.match(content, /\["prepare", "--host", "pi", "--source", sources/);
+  assert.match(content, /\["prepare", "--host", "pi", "--model", modelId, "--source", sources/);
   assert.ok(content.includes('\nexport default function'));
   assert.equal(content.includes('\\nexport default function'), false);
   await assert.rejects(() => installIntegration({ agent: 'pi', scope: 'project', cwd: root, home: root }), /already exists/);
+});
+
+test('force install tightens an existing integration file to mode 0600', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-insight-force-install-'));
+  const options = { agent: 'pi', scope: 'project', cwd: root, home: root };
+  const target = await installIntegration(options);
+  await chmod(target, 0o644);
+
+  await installIntegration({ ...options, force: true });
+
+  assert.equal((await stat(target)).mode & 0o777, 0o600);
+});
+
+test('install refuses dangling integration symlinks instead of writing outside the project', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-insight-symlink-install-'));
+  const target = integrationPath({ agent: 'claude', scope: 'project', cwd: root, home: root });
+  const outside = join(root, 'outside', 'captured.md');
+  await mkdir(join(root, '.claude', 'commands'), { recursive: true });
+  await symlink(outside, target);
+  await assert.rejects(installIntegration({ agent: 'claude', scope: 'project', cwd: root, home: root }), /symbolic link/);
+  await assert.rejects(installIntegration({ agent: 'claude', scope: 'project', cwd: root, home: root, force: true }), /symbolic link/);
+  await assert.rejects(access(outside), /ENOENT/);
+});
+
+test('project install refuses a symlinked parent directory that escapes scope', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-insight-parent-symlink-'));
+  const outside = await mkdtemp(join(tmpdir(), 'agent-insight-parent-outside-'));
+  await symlink(outside, join(root, '.claude'));
+  await assert.rejects(installIntegration({ agent: 'claude', scope: 'project', cwd: root, home: root }), /symbolic-link parent/);
+  await assert.rejects(access(join(outside, 'commands', 'agent-insights.md')), /ENOENT/);
 });
 
 test('installs Codex skills in the shared .agents skill surface', () => {
@@ -89,10 +119,10 @@ test('installs Codex skills in the shared .agents skill surface', () => {
 
 test('host bridges prepare semantic runs for their active model', () => {
   assert.deepEqual(AGENTS, ['claude', 'codex', 'cursor', 'opencode', 'pi']);
-  assert.match(renderIntegration('claude'), /agent-insight prepare --host claude --source/);
-  assert.match(renderIntegration('codex'), /agent-insight prepare --host codex --source/);
-  assert.match(renderIntegration('opencode'), /agent-insight prepare --host opencode --source/);
-  assert.match(renderIntegration('cursor'), /agent-insight prepare --host cursor --source/);
+  assert.match(renderIntegration('claude'), /agent-insight prepare --host claude --model .* --source/);
+  assert.match(renderIntegration('codex'), /agent-insight prepare --host codex --model .* --source/);
+  assert.match(renderIntegration('opencode'), /agent-insight prepare --host opencode --model .* --source/);
+  assert.match(renderIntegration('cursor'), /agent-insight prepare --host cursor --model .* --source/);
   assert.doesNotMatch(renderIntegration('claude'), /claude\s+(?:-p|--print)/i);
   assert.doesNotMatch(renderIntegration('codex'), /codex\s+exec/i);
   assert.doesNotMatch(renderIntegration('opencode'), /opencode\s+run/i);

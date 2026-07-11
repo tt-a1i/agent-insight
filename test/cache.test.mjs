@@ -27,6 +27,8 @@ test('facet cache reuses validated semantic results without storing transcript t
   assert.deepEqual(await cache.get(key), facet);
   const status = await cache.status();
   assert.equal(status.entries, 1);
+  assert.equal(status.valid, 1);
+  assert.equal(status.invalid, 0);
   assert.ok(status.bytes > 0);
 
   const files = await readdir(root);
@@ -50,6 +52,31 @@ test('facet cache can be cleared through its public cache boundary', async () =>
   await cache.put(key, { protocolVersion: 'claude-insights-2.1.206/v1' });
 
   assert.equal(await cache.clear(), 1);
-  assert.deepEqual(await cache.status(), { entries: 0, bytes: 0 });
+  assert.deepEqual(await cache.status(), { entries: 0, bytes: 0, valid: 0, invalid: 0 });
   assert.equal(await cache.get(key), null);
+});
+
+test('facet cache identifies and removes content-stale entries', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-insight-cache-stale-'));
+  const cache = new FacetCache(root);
+  const key = {
+    source: 'codex', opaqueSessionId: 'opaque-session', contentHash: 'old-hash',
+    analyzerHost: 'codex', analyzerModel: 'gpt-5', promptVersion: 'v1'
+  };
+  await cache.put(key, { protocolVersion: 'test' });
+  const lookup = await cache.lookup({ ...key, contentHash: 'new-hash' });
+  assert.equal(lookup.status, 'stale');
+  assert.equal(lookup.removed, 1);
+  assert.equal((await cache.status()).entries, 0);
+});
+
+test('model-bound cache rebuild removal preserves other analyzers', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-insight-cache-model-'));
+  const cache = new FacetCache(root);
+  const base = { source: 'codex', opaqueSessionId: 'opaque', contentHash: 'hash', promptVersion: 'v1' };
+  await cache.put({ ...base, analyzerHost: 'codex', analyzerModel: 'gpt-5' }, { value: 'target' });
+  await cache.put({ ...base, analyzerHost: 'claude', analyzerModel: 'sonnet' }, { value: 'keep' });
+  assert.equal(await cache.clearForAnalyzer('codex', 'gpt-5'), 1);
+  assert.equal((await cache.status()).entries, 1);
+  assert.deepEqual(await cache.get({ ...base, analyzerHost: 'claude', analyzerModel: 'sonnet' }), { value: 'keep' });
 });

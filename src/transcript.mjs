@@ -2,17 +2,13 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
+import { Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { basename, extname } from 'node:path';
+import { claudeTopologyNode, selectClaudeLeafUuids } from './parse.mjs';
 
 function firstString(...values) {
   return values.find((value) => typeof value === 'string' && value.trim())?.trim() ?? null;
-}
-
-async function hashFile(filePath) {
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
-  return hash.digest('hex');
 }
 
 function addMessage(messages, role, text, limit) {
@@ -64,26 +60,72 @@ function observeRecord(state, record) {
   }
 }
 
-export async function extractAnalysisInput(file, source) {
-  const filePath = file instanceof URL ? fileURLToPath(file) : String(file);
-  if ((await lstat(filePath)).isSymbolicLink()) throw new Error('Refusing symbolic-link transcript.');
-  if (extname(filePath).toLowerCase() !== '.jsonl') throw new Error('Semantic transcript extraction currently requires JSONL.');
-  const state = { sessionId: null, project: null, date: null, messages: [], userMessageCount: 0, firstTimestamp: null, lastTimestamp: null };
-  const lines = createInterface({ input: createReadStream(filePath, { encoding: 'utf8' }), crlfDelay: Infinity });
+function emptyState() {
+  return { sessionId: null, project: null, date: null, messages: [], userMessageCount: 0, firstTimestamp: null, lastTimestamp: null };
+}
+
+async function readSnapshot(filePath, info, { maxRecords, maxRecordBytes, topologyOnly = false, selectedUuids = null } = {}) {
+  const state = emptyState();
+  const topology = topologyOnly ? new Map() : null;
+  const hash = createHash('sha256');
+  const hashingStream = new Transform({
+    transform(chunk, _encoding, callback) {
+      hash.update(chunk);
+      callback(null, chunk);
+    }
+  });
+  const input = createReadStream(filePath, { end: Math.max(0, info.size - 1) }).pipe(hashingStream);
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  let records = 0;
   for await (const line of lines) {
     if (!line.trim()) continue;
+    records += 1;
+    if (records > maxRecords) throw new Error(`Transcript exceeds the ${maxRecords} record semantic limit.`);
+    if (Buffer.byteLength(line) > maxRecordBytes) throw new Error('Transcript contains a record above the semantic record-size limit.');
     try {
-      observeRecord(state, JSON.parse(line));
+      const record = JSON.parse(line);
+      if (topology) {
+        const node = claudeTopologyNode(record);
+        if (node) topology.set(node.uuid, node);
+      } else if (!selectedUuids || selectedUuids.has(firstString(record.uuid))) {
+        observeRecord(state, record);
+      }
     } catch {
       // Coverage and parse diagnostics are handled by the collection pass.
     }
   }
+  const finalInfo = await lstat(filePath);
+  if (finalInfo.size !== info.size || finalInfo.mtimeMs !== info.mtimeMs) throw new Error('Transcript changed during semantic extraction; retry from a fresh run.');
+  return { state, topology, contentHash: hash.digest('hex') };
+}
+
+export async function extractAnalysisInput(file, source, {
+  maxBytes = 16 * 1024 * 1024,
+  maxRecords = 100_000,
+  maxRecordBytes = 2 * 1024 * 1024
+} = {}) {
+  const filePath = file instanceof URL ? fileURLToPath(file) : String(file);
+  const info = await lstat(filePath);
+  if (info.isSymbolicLink()) throw new Error('Refusing symbolic-link transcript.');
+  if (info.size > maxBytes) throw new Error(`Transcript exceeds the ${Math.round(maxBytes / 1024 / 1024 * 10) / 10} MiB semantic byte limit.`);
+  if (extname(filePath).toLowerCase() !== '.jsonl') throw new Error('Semantic transcript extraction currently requires JSONL.');
+  let selectedUuids = null;
+  let expectedHash = null;
+  if (source === 'claude') {
+    const topologyPass = await readSnapshot(filePath, info, { maxRecords, maxRecordBytes, topologyOnly: true });
+    selectedUuids = selectClaudeLeafUuids(topologyPass.topology);
+    expectedHash = topologyPass.contentHash;
+  }
+  const snapshot = await readSnapshot(filePath, info, { maxRecords, maxRecordBytes, selectedUuids });
+  if (expectedHash && snapshot.contentHash !== expectedHash) throw new Error('Transcript changed between semantic projection passes; retry from a fresh run.');
+  const { state } = snapshot;
   if (state.messages.length === 0) throw new Error('Transcript contains no analyzable user or assistant messages.');
   const sessionKey = state.sessionId ?? basename(filePath, extname(filePath));
   return {
     source,
+    sessionId: sessionKey,
     opaqueId: createHash('sha256').update(`${source}\u0000${sessionKey}`).digest('hex').slice(0, 24),
-    contentHash: await hashFile(filePath),
+    contentHash: snapshot.contentHash,
     date: state.date,
     projectLabel: state.project ? basename(state.project.replace(/[\\/]+$/, '')) : 'unknown',
     userMessageCount: state.userMessageCount,

@@ -128,13 +128,13 @@ agent-insight prepare --host claude --source claude,cursor --start 2026-06-01 --
 task at a time:
 
 ```bash
-agent-insight semantic next --run <run-id>
+agent-insight semantic next --run <run-id> --host <host> --model <exact-model-id-or-unknown>
 # Analyze the returned request with the current host model. Write only its
 # required JSON result to the returned submissionPath.
-agent-insight semantic ingest --run <run-id> --task <task-id>
+agent-insight semantic ingest --run <run-id> --task <task-id> --host <host> --model <same-model-id>
 
 # Repeat next → host analysis → ingest until next returns kind: complete.
-agent-insight semantic finalize --run <run-id>
+agent-insight semantic finalize --run <run-id> --host <host> --model <same-model-id>
 ```
 
 `finalize` refuses incomplete runs. On success it prints a `file://` link to
@@ -155,13 +155,29 @@ Instead, it caches validated **derived facets** under
 identity, transcript content hash, analyzer host/model, and protocol version.
 It contains structured conclusions and short evidence paraphrases, never raw
 prompts, assistant text, source code, tool arguments, or tool output. Cache
-and report files are private (`0600`) in private directories (`0700`).
+and report files are private (`0600`) in private directories (`0700`). Before
+anything is persisted, a transcript-derived privacy guard rejects meaningful
+verbatim spans, secret-like values, absolute paths, and credential-shaped
+output. Cache hit, miss, invalid, stale, bypass, and write-failure counts are
+recorded in the run and final report.
 
 ```bash
 agent-insight cache status
 agent-insight cache clear
-agent-insight cache rebuild
+agent-insight cache rebuild --host codex --model <exact-current-model-id> --source codex --days 30
 ```
+
+`cache rebuild` clears only facets for the named host/model pair and prepares
+a new resumable semantic run; complete it with the normal
+`semantic next → ingest → finalize` loop.
+When a host cannot expose its exact model ID, it passes `unknown` and Agent
+Insight disables reusable caching for that run rather than risk cross-model
+reuse.
+
+Large sessions and aggregate evidence are processed through bounded derived
+chunks (25,000-character session chunks; direct semantic prompts switch to
+chunked processing above 30,000 characters). The chunks are analyzed by the
+same current host model, and only validated derived summaries are persisted.
 
 An imported Groq or generic export follows the same rule: it is parsed once
 and reduced to an anonymized metadata snapshot. The raw export is never copied
@@ -205,17 +221,31 @@ deterministic metric surface. It can also generate an identity-blinded A/B
 bundle for the semantic acceptance gate (tie or better in at least 80% of
 section judgments).
 
+The reference input must be an independently captured and normalized Claude
+Code 2.1.206 report carrying `claude-code` provenance, the exact version, and
+a capture hash. Comparing Agent Insight with itself cannot certify parity.
+
 ```bash
 agent-insight parity compare \
   --reference claude-reference/report.json \
+  --reference-sha256 <independently-recorded-sha256> \
   --candidate ~/.agent-insight/usage-data/report.json \
   --output comparison.json \
-  --blind-output semantic-review.json
+  --blind-output semantic-review.json \
+  --seed <private-random-seed>
+
+# After an identity-blind reviewer fills each item.rating with A, B, or tie:
+agent-insight parity evaluate \
+  --review semantic-review.json \
+  --seed <same-private-random-seed> \
+  --output semantic-result.json
 ```
 
 A passing machine comparison requires `structural.score: 1` and
 `deterministic.score: 1`. Semantic quality remains a blind review rather than
-being mislabeled as an exact string comparison.
+being mislabeled as an exact string comparison. Overall acceptance is closed
+until the trusted-reference, structural, deterministic, and semantic gates all
+pass.
 
 ## Known limits and deliberate boundaries
 

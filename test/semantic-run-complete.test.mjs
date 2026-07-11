@@ -63,6 +63,11 @@ test('a semantic run progresses through every section and finalizes a timestampe
   while (true) {
     const task = await nextSemanticTask({ runsRoot, cache, runId: prepared.id });
     if (task.kind === 'complete') break;
+    if (task.kind === 'aggregate_batch') {
+      assert.equal(task.tasks.length, 7);
+      for (const item of task.tasks) await ingestSemanticResult({ runsRoot, cache, runId: prepared.id, taskId: item.id, result: aggregateResult(item.section, id) });
+      continue;
+    }
     assert.equal(task.kind, 'aggregate');
     await ingestSemanticResult({ runsRoot, cache, runId: prepared.id, taskId: task.id, result: aggregateResult(task.section, id) });
   }

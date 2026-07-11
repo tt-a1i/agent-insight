@@ -1,6 +1,6 @@
 # Claude Code `/insights` parity contract
 
-- Status: implementation target
+- Status: implemented compatibility contract; acceptance requires the parity gates below
 - Reference: Claude Code `2.1.206`
 - Reference build: `2026-07-09T01:39:20Z`
 - Reference Git SHA: `edc8ebf7f852d3abffad32a5bf8e49e439f92afb`
@@ -711,7 +711,8 @@ font request even though the report file is local.
 - invalidates on protocol version, prompt version, content hash, and analyzer
   host/model when known;
 - retains completed facets after interruption so a later run can resume;
-- supports `agent-insight cache status`, `cache clear`, and `cache rebuild`;
+- supports `agent-insight cache status`, `cache clear`, and model-bound
+  `cache rebuild --host <host> --model <exact-model-id>`;
 - reports hit, miss, stale, invalid, and failed counts.
 
 Agent Insight writes to its own data root rather than overwriting Claude's

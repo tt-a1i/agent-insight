@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { summarizeSessions } from '../src/analyze.mjs';
 import { renderHtml } from '../src/report.mjs';
+import { compareParityReports } from '../src/parity.mjs';
 
 function session() {
   return {
@@ -20,7 +21,7 @@ function semantic() {
   const evidenceSessionIds = ['opaque-a'];
   return {
     analyzer: { host: 'claude', model: 'current' },
-    sessions: [{ id: 'opaque-a', date: '2026-07-01', facet: {
+    sessions: [{ id: 'opaque-a', date: '2026-07-01', source: 'claude', facet: {
       underlyingGoal: 'Fix a parser', briefSummary: 'Parser fixed', goalCategories: { fix_bug: 1 }, outcome: 'fully_achieved',
       userSatisfactionCounts: { satisfied: 1 }, agentHelpfulness: 'very_helpful', sessionType: 'single_task',
       frictionCounts: { tool_failed: 1 }, frictionDetail: 'A command failed.', primarySuccess: 'good_debugging'
@@ -43,17 +44,24 @@ function semantic() {
 }
 
 test('HTML follows the Claude 2.1.206 insights information architecture in order', () => {
-  const html = renderHtml(summarizeSessions([session()], { semantic: semantic() }));
+  const report = summarizeSessions([session()], { semantic: semantic() });
+  const html = renderHtml(report);
+  assert.match(html, /<title>Claude Code Insights<\/title>/);
+  assert.match(html, /<h1>Claude Code Insights<\/h1><p class="subtitle">3 messages across 1 sessions \| 2026-07-01 to 2026-07-01<\/p>/);
+  assert.match(html, /<span>Lines<\/span><strong>\+12\/-3<\/strong>/);
+  assert.ok(html.indexOf('<h2>At a Glance</h2>') < html.indexOf('<nav class="toc"'));
+  assert.ok(html.indexOf('<nav class="toc"') < html.indexOf('<section class="metrics">'));
+  assert.ok(html.indexOf('<section class="metrics">') < html.indexOf('<section id="what-you-work-on"'));
   const headings = [
-    'At a Glance', 'What You Work On', 'What You Wanted', 'Languages', 'How You Use',
-    'User Response Time Distribution', 'Parallel Sessions', 'User Messages by Time of Day',
-    'Impressive Things You Did', 'What Helped Most', 'Where Things Go Wrong',
-    'Primary Friction Types', 'Existing Agent Features to Try', 'New Ways to Use Your Agent',
+    'At a Glance', 'What You Work On', 'What You Wanted', 'Languages', 'How You Use Claude Code',
+    'User Response Time Distribution', 'Multi-Clauding (Parallel Sessions)', 'User Messages by Time of Day',
+    'Impressive Things You Did', "What Helped Most (Claude's Capabilities)", 'Where Things Go Wrong',
+    'Primary Friction Types', 'Existing CC Features to Try', 'New Ways to Use Claude Code',
     'On the Horizon', 'The parser blinked first'
   ];
   let previous = -1;
   for (const heading of headings) {
-    const index = html.search(new RegExp(`<h2[^>]*>${heading}`));
+    const index = html.indexOf(`<h2>${heading}</h2>`);
     assert.ok(index > previous, `${heading} should appear in report order`);
     previous = index;
   }
@@ -62,7 +70,8 @@ test('HTML follows the Claude 2.1.206 insights information architecture in order
     'Features to Try', 'New Usage Patterns', 'On the Horizon', 'Team Feedback'
   ];
   assert.ok(toc.every((label) => html.includes(label)), 'fixed parity table of contents should be present');
-  assert.match(html, /Team Feedback \(not generated\)/);
+  assert.match(html, />Team Feedback<\/span>/);
+  assert.match(html, /Suggested CLAUDE\.md Additions/);
   assert.match(html, /id="time-zone"/);
   assert.match(html, /PT \(UTC-8\).*ET \(UTC-5\).*London \(UTC\).*CET \(UTC\+1\).*Tokyo \(UTC\+9\)/s);
   assert.match(html, /data-utc-hours=/);
@@ -70,5 +79,30 @@ test('HTML follows the Claude 2.1.206 insights information architecture in order
   assert.match(html, /2–10s/);
   assert.match(html, /Morning/);
   assert.match(html, /Evidence: opaque-a/);
+  assert.match(html, /Primary successes/);
+  assert.match(html, /Evidence index/);
+  assert.match(html, /<td>opaque-a<\/td><td>claude<\/td><td>2026-07-01<\/td>/);
   assert.doesNotMatch(html, /https:\/\//);
+  assert.equal(compareParityReports(report, report, { candidateHtml: html }).acceptance.structuralParity, true);
+});
+
+test('HTML omits missing semantic sections while retaining deterministic charts and the fixed TOC', () => {
+  const html = renderHtml(summarizeSessions([session()]));
+
+  for (const semanticHeading of [
+    'At a Glance', 'What You Work On', 'How You Use Claude Code', 'Impressive Things You Did',
+    'Where Things Go Wrong', 'Existing CC Features to Try', 'New Ways to Use Claude Code',
+    'On the Horizon', 'A memorable moment'
+  ]) {
+    assert.doesNotMatch(html, new RegExp(`<h2>${semanticHeading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</h2>`));
+  }
+  for (const deterministicHeading of [
+    'What You Wanted', 'Languages', 'User Response Time Distribution',
+    'Multi-Clauding (Parallel Sessions)', 'User Messages by Time of Day',
+    "What Helped Most (Claude's Capabilities)", 'Primary Friction Types'
+  ]) {
+    assert.ok(html.includes(`<h2>${deterministicHeading}</h2>`));
+  }
+  assert.match(html, /<nav class="toc"/);
+  assert.match(html, />Team Feedback<\/span>/);
 });

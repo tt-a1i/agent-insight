@@ -44,6 +44,7 @@ export function openCodeAnalysisInput(document) {
   const sessionId = String(info.id ?? 'unknown-opencode-session');
   return {
     source: 'opencode',
+    sessionId,
     opaqueId: createHash('sha256').update(`opencode\u0000${sessionId}`).digest('hex').slice(0, 24),
     contentHash: createHash('sha256').update(JSON.stringify(document)).digest('hex'),
     date: Number.isFinite(created) ? new Date(created).toISOString().slice(0, 10) : null,

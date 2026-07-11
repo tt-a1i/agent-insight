@@ -75,8 +75,7 @@ function contentText(content, types = new Set(['text', 'input_text', 'output_tex
 }
 
 function toolResultText(block) {
-  if (typeof block.content === 'string') return block.content;
-  return contentText(block.content);
+  return typeof block.content === 'string' ? block.content : null;
 }
 
 function classifyToolError(text) {
@@ -93,17 +92,43 @@ function classifyToolError(text) {
 function lineDiffCounts(oldText, newText) {
   const oldLines = String(oldText ?? '').split('\n');
   const newLines = String(newText ?? '').split('\n');
-  if (oldLines.length * newLines.length > 100_000) return { added: newLines.length, removed: oldLines.length };
-  const previous = new Array(newLines.length + 1).fill(0);
-  for (const oldLine of oldLines) {
-    let diagonal = 0;
-    for (let index = 1; index <= newLines.length; index += 1) {
-      const above = previous[index];
-      previous[index] = oldLine === newLines[index - 1] ? diagonal + 1 : Math.max(previous[index], previous[index - 1]);
-      diagonal = above;
-    }
+  let prefix = 0;
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1;
+  let oldEnd = oldLines.length;
+  let newEnd = newLines.length;
+  while (oldEnd > prefix && newEnd > prefix && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+    oldEnd -= 1;
+    newEnd -= 1;
   }
-  const common = previous.at(-1);
+  const oldMiddle = oldLines.slice(prefix, oldEnd);
+  const newMiddle = newLines.slice(prefix, newEnd);
+  const maximum = oldMiddle.length + newMiddle.length;
+  let editDistance = maximum;
+  if (maximum > 0) {
+    const offset = maximum + 1;
+    const frontier = new Int32Array((maximum * 2) + 3);
+    frontier[offset + 1] = 0;
+    search: for (let distance = 0; distance <= maximum; distance += 1) {
+      for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+        const index = offset + diagonal;
+        let x = diagonal === -distance || (diagonal !== distance && frontier[index - 1] < frontier[index + 1])
+          ? frontier[index + 1]
+          : frontier[index - 1] + 1;
+        let y = x - diagonal;
+        while (x < oldMiddle.length && y < newMiddle.length && oldMiddle[x] === newMiddle[y]) {
+          x += 1;
+          y += 1;
+        }
+        frontier[index] = x;
+        if (x >= oldMiddle.length && y >= newMiddle.length) {
+          editDistance = distance;
+          break search;
+        }
+      }
+    }
+  } else editDistance = 0;
+  const middleCommon = (oldMiddle.length + newMiddle.length - editDistance) / 2;
+  const common = prefix + (oldLines.length - oldEnd) + middleCommon;
   return { added: newLines.length - common, removed: oldLines.length - common };
 }
 
@@ -112,8 +137,8 @@ function observeTool(session, name, input = {}) {
   session.toolCalls += 1;
   increment(session.toolNames, toolName);
   const command = typeof input.command === 'string' ? input.command : '';
-  if (/\bgit\s+commit\b/.test(command)) session.gitCommits += 1;
-  if (/\bgit\s+push\b/.test(command)) session.gitPushes += 1;
+  if (command.includes('git commit')) session.gitCommits += 1;
+  if (command.includes('git push')) session.gitPushes += 1;
   if (/^(Task|Agent)$/i.test(toolName)) session.usesTaskAgent = true;
   if (/^mcp__/i.test(toolName)) session.usesMcp = true;
   if (/^WebSearch$/i.test(toolName)) session.usesWebSearch = true;
@@ -206,7 +231,6 @@ function observeRecord(session, record) {
         if (responseSeconds > 2 && responseSeconds < 3600) session.userResponseTimes.push(responseSeconds);
       }
     }
-    session._lastAssistantTimestamp = null;
   }
   if (isAssistant) {
     session.assistantMessages += 1;
@@ -331,11 +355,38 @@ function importSnapshotSession(document, filePath, source) {
   return session;
 }
 
-function observeLine(session, line) {
+export function claudeTopologyNode(record) {
+  if (!isObject(record)) return null;
+  const uuid = firstString(record.uuid);
+  if (!uuid) return null;
+  const payload = isObject(record.payload) ? record.payload : null;
+  const message = isObject(record.message) ? record.message : null;
+  const item = record.type === 'response_item' && payload ? payload : message ?? payload ?? record;
+  const recordType = String(record.type ?? '').toLowerCase();
+  const itemType = String(item.type ?? '').toLowerCase();
+  const role = String(item.role ?? record.role ?? '').toLowerCase();
+  const userText = contentText(item.content);
+  const isUser = recordType !== 'event_msg'
+    && Boolean(userText.trim())
+    && (role === 'user' || recordType === 'user' || itemType === 'user_message');
+  return {
+    uuid,
+    parentUuid: firstString(record.parentUuid),
+    timestamp: firstDate(record),
+    isUser
+  };
+}
+
+function observeLine(session, line, { topology = null, selectedUuids = null } = {}) {
   if (!line.trim()) return;
   session.recordsRead += 1;
   try {
-    if (observeRecord(session, JSON.parse(line))) session.recognizedRecords += 1;
+    const record = JSON.parse(line);
+    const topologyNode = topology ? claudeTopologyNode(record) : null;
+    if (topologyNode) topology.set(topologyNode.uuid, topologyNode);
+    if ((!selectedUuids || selectedUuids.has(firstString(record.uuid))) && observeRecord(session, record)) {
+      session.recognizedRecords += 1;
+    }
   } catch {
     // A live transcript can end with a partial line; either way coverage must
     // reveal that this file was not completely understood.
@@ -345,7 +396,53 @@ function observeLine(session, line) {
   }
 }
 
-async function parseJsonl(filePath, source, { fileSize, maxBytes, maxRecords, maxRecordBytes }) {
+function sessionDurationMinutes(session) {
+  const start = Date.parse(session.startedAt);
+  const end = Date.parse(session.endedAt);
+  return Number.isFinite(start) && Number.isFinite(end) && end >= start
+    ? Math.round((end - start) / 60_000)
+    : 0;
+}
+
+function chooseClaudeLeaf(current, incoming) {
+  if (incoming.userMessages !== current.userMessages) {
+    return incoming.userMessages > current.userMessages ? incoming : current;
+  }
+  return sessionDurationMinutes(incoming) > sessionDurationMinutes(current) ? incoming : current;
+}
+
+export function selectClaudeLeafUuids(nodes) {
+  const referencedParents = new Set();
+  for (const node of nodes.values()) if (node.parentUuid) referencedParents.add(node.parentUuid);
+  const leaves = [...nodes.keys()].filter((uuid) => !referencedParents.has(uuid));
+  if (leaves.length <= 1) return null;
+
+  let selected = null;
+  for (const leaf of leaves) {
+    const uuids = [];
+    const seen = new Set();
+    let uuid = leaf;
+    let startedAt = null;
+    let endedAt = null;
+    let userMessages = 0;
+    while (uuid && nodes.has(uuid) && !seen.has(uuid)) {
+      seen.add(uuid);
+      uuids.push(uuid);
+      const node = nodes.get(uuid);
+      if (node.isUser) userMessages += 1;
+      if (node.timestamp) {
+        if (!startedAt || node.timestamp < startedAt) startedAt = node.timestamp;
+        if (!endedAt || node.timestamp > endedAt) endedAt = node.timestamp;
+      }
+      uuid = node.parentUuid;
+    }
+    const candidate = { uuids, userMessages, startedAt, endedAt };
+    selected = selected ? chooseClaudeLeaf(selected, candidate) : candidate;
+  }
+  return selected ? new Set(selected.uuids) : null;
+}
+
+async function parseJsonlPass(filePath, source, { fileSize, maxBytes, maxRecords, maxRecordBytes }, { topology = null, selectedUuids = null } = {}) {
   const session = emptySession(filePath, source);
   const bytesToRead = Math.min(fileSize, maxBytes);
   if (fileSize > maxBytes) {
@@ -367,7 +464,7 @@ async function parseJsonl(filePath, source, { fileSize, maxBytes, maxRecords, ma
         discardingOversizeLine = false;
         continue;
       }
-      observeLine(session, line);
+      observeLine(session, line, { topology, selectedUuids });
       if (session.recordsRead >= maxRecords) {
         session.partial = true;
         session.partialReason = 'event_limit';
@@ -386,13 +483,31 @@ async function parseJsonl(filePath, source, { fileSize, maxBytes, maxRecords, ma
     if (session.partialReason === 'event_limit') break;
   }
   if (!session.partial && pending.trim()) {
-    if (Buffer.byteLength(pending) <= maxRecordBytes) observeLine(session, pending);
+    if (Buffer.byteLength(pending) <= maxRecordBytes) observeLine(session, pending, { topology, selectedUuids });
     else {
       session.partial = true;
       session.partialReason = 'record_limit';
     }
   }
   return session;
+}
+
+async function parseJsonl(filePath, source, limits) {
+  if (source !== 'claude') return parseJsonlPass(filePath, source, limits);
+  const topology = new Map();
+  const aggregate = await parseJsonlPass(filePath, source, limits, { topology });
+  const selectedUuids = selectClaudeLeafUuids(topology);
+  topology.clear();
+  if (!selectedUuids) return aggregate;
+
+  const selected = await parseJsonlPass(filePath, source, limits, { selectedUuids });
+  selected.recordsRead = aggregate.recordsRead;
+  selected.recognizedRecords = aggregate.recognizedRecords;
+  selected.malformedRecords = aggregate.malformedRecords;
+  selected.partial = aggregate.partial;
+  selected.partialReason = aggregate.partialReason;
+  selected.hasBranches = true;
+  return selected;
 }
 
 function observeJsonDocument(session, document) {

@@ -59,6 +59,98 @@ test('extracts Claude 2.1.206 deterministic insights metrics', async () => {
   ]);
 });
 
+test('matches Claude 2.1.206 git, tool-error, and response-time edge semantics', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-insight-claude-edges-'));
+  const file = join(directory, 'edges.jsonl');
+  const records = [
+    { type: 'assistant', timestamp: '2026-07-03T09:00:00.000Z', sessionId: 'claude-edges', message: { role: 'assistant', content: 'Ready.' } },
+    { type: 'user', timestamp: '2026-07-03T09:00:10.000Z', sessionId: 'claude-edges', message: { role: 'user', content: 'First follow-up.' } },
+    { type: 'user', timestamp: '2026-07-03T09:00:20.000Z', sessionId: 'claude-edges', message: { role: 'user', content: 'Second follow-up.' } },
+    { type: 'assistant', timestamp: '2026-07-03T09:00:30.000Z', sessionId: 'claude-edges', message: { role: 'assistant', content: [
+      { type: 'tool_use', name: 'Bash', input: { command: 'xgit commitish' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'git   push' } }
+    ] } },
+    { type: 'user', timestamp: '2026-07-03T09:00:40.000Z', sessionId: 'claude-edges', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'tool-1', is_error: true, content: [{ type: 'text', text: 'exit code 1' }] }
+    ] } }
+  ];
+  await writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+  const session = await parseSessionFile(file, 'claude');
+
+  assert.equal(session.gitCommits, 1);
+  assert.equal(session.gitPushes, 0);
+  assert.deepEqual(session.toolErrorCategories, { Other: 1 });
+  assert.deepEqual(session.userResponseTimes, [10, 20]);
+});
+
+test('large identical Edit inputs retain exact zero line deltas', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-insight-large-edit-'));
+  const file = join(root, 'large-edit.jsonl');
+  const unchanged = Array.from({ length: 317 }, (_, index) => `line-${index}`).join('\n');
+  await writeFile(file, `${JSON.stringify({
+    type: 'assistant', timestamp: '2026-07-01T00:00:00.000Z', sessionId: 'large-edit',
+    message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/work/file.ts', old_string: unchanged, new_string: unchanged } }] }
+  })}\n`);
+  const session = await parseSessionFile(file, 'claude');
+  assert.equal(session.linesAdded, 0);
+  assert.equal(session.linesRemoved, 0);
+});
+
+test('selects the Claude leaf branch with the most user messages before duration', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-insight-claude-branch-count-'));
+  const file = join(directory, 'branch-count.jsonl');
+  const message = (type, uuid, parentUuid, timestamp, content) => ({
+    type, uuid, parentUuid, timestamp, sessionId: 'claude-branch-count',
+    message: { role: type, content }
+  });
+  const records = [
+    message('user', 'u0', null, '2026-07-03T09:00:00.000Z', 'Start.'),
+    message('assistant', 'a0', 'u0', '2026-07-03T09:01:00.000Z', 'Choose a path.'),
+    message('user', 'u1', 'a0', '2026-07-03T09:02:00.000Z', 'Dense branch.'),
+    message('assistant', 'a1', 'u1', '2026-07-03T09:03:00.000Z', [{ type: 'tool_use', name: 'Bash', input: { command: 'git commit -m dense' } }]),
+    message('user', 'u2', 'a1', '2026-07-03T09:04:00.000Z', 'One more turn.'),
+    message('assistant', 'a2', 'u2', '2026-07-03T09:05:00.000Z', 'Done.'),
+    message('user', 'u3', 'a0', '2026-07-03T09:10:00.000Z', 'Long branch.'),
+    message('assistant', 'a3', 'u3', '2026-07-03T10:00:00.000Z', [{ type: 'tool_use', name: 'Bash', input: { command: 'git push' } }])
+  ];
+  await writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+  const session = await parseSessionFile(file, 'claude');
+
+  assert.equal(session.userMessages, 3);
+  assert.equal(session.gitCommits, 1);
+  assert.equal(session.gitPushes, 0);
+  assert.equal(session.endedAt, '2026-07-03T09:05:00.000Z');
+  assert.equal(session.hasBranches, true);
+});
+
+test('breaks equal-user-message Claude leaf ties by branch duration', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-insight-claude-branch-duration-'));
+  const file = join(directory, 'branch-duration.jsonl');
+  const message = (type, uuid, parentUuid, timestamp, content) => ({
+    type, uuid, parentUuid, timestamp, sessionId: 'claude-branch-duration',
+    message: { role: type, content }
+  });
+  const records = [
+    message('user', 'u0', null, '2026-07-03T09:00:00.000Z', 'Start.'),
+    message('assistant', 'a0', 'u0', '2026-07-03T09:01:00.000Z', 'Choose a path.'),
+    message('user', 'u1', 'a0', '2026-07-03T09:02:00.000Z', 'Short branch.'),
+    message('assistant', 'a1', 'u1', '2026-07-03T09:03:00.000Z', [{ type: 'tool_use', name: 'Bash', input: { command: 'git commit -m short' } }]),
+    message('user', 'u2', 'a0', '2026-07-03T09:04:00.000Z', 'Long branch.'),
+    message('assistant', 'a2', 'u2', '2026-07-03T09:20:00.000Z', [{ type: 'tool_use', name: 'Bash', input: { command: 'git push' } }])
+  ];
+  await writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+  const session = await parseSessionFile(file, 'claude');
+
+  assert.equal(session.userMessages, 2);
+  assert.equal(session.gitCommits, 0);
+  assert.equal(session.gitPushes, 1);
+  assert.equal(session.endedAt, '2026-07-03T09:20:00.000Z');
+  assert.equal(session.hasBranches, true);
+});
+
 test('summarizes sessions and emits only metadata reports', async () => {
   const [claude, codex] = await Promise.all([
     parseSessionFile(fixture('claude.jsonl'), 'claude'),
@@ -101,6 +193,59 @@ test('does not double-count Claude subagent journals by default', async () => {
   assert.equal(fullScan.sessions[0].userMessages, 2);
 });
 
+test('deduplicates Claude files by user-message count before transcript richness', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agent-insight-claude-dedup-count-'));
+  const project = join(home, '.claude', 'projects', 'encoded-project');
+  await mkdir(project, { recursive: true });
+  const preferred = join(project, 'preferred.jsonl');
+  const verbose = join(project, 'verbose.jsonl');
+  const user = (timestamp, content) => ({ type: 'user', timestamp, sessionId: 'shared-session', message: { role: 'user', content } });
+  const assistant = (timestamp) => ({ type: 'assistant', timestamp, sessionId: 'shared-session', message: { role: 'assistant', content: 'Work.' } });
+  await writeFile(preferred, `${[
+    user('2026-07-03T09:00:00.000Z', 'One.'),
+    user('2026-07-03T09:00:10.000Z', 'Two.'),
+    user('2026-07-03T09:00:20.000Z', 'Three.')
+  ].map((record) => JSON.stringify(record)).join('\n')}\n`);
+  await writeFile(verbose, `${[
+    user('2026-07-03T09:00:00.000Z', 'One.'),
+    ...Array.from({ length: 8 }, (_, index) => assistant(`2026-07-03T09:${String(index + 1).padStart(2, '0')}:00.000Z`)),
+    user('2026-07-03T10:00:00.000Z', 'Two.')
+  ].map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+  const result = await collectSessions({ sources: 'claude', home, cwd: home, days: Infinity });
+
+  assert.equal(result.sessions.length, 1);
+  assert.equal(result.sessions[0].userMessages, 3);
+  assert.equal(result.sessions[0].assistantMessages, 0);
+  assert.equal(result.analysisCandidates[0].locator.path, preferred);
+});
+
+test('breaks equal-user-message Claude file ties by duration', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agent-insight-claude-dedup-duration-'));
+  const project = join(home, '.claude', 'projects', 'encoded-project');
+  await mkdir(project, { recursive: true });
+  const noisy = join(project, 'noisy.jsonl');
+  const longer = join(project, 'longer.jsonl');
+  const user = (timestamp, content) => ({ type: 'user', timestamp, sessionId: 'shared-session', message: { role: 'user', content } });
+  const assistant = (timestamp) => ({ type: 'assistant', timestamp, sessionId: 'shared-session', message: { role: 'assistant', content: 'Work.' } });
+  await writeFile(noisy, `${[
+    user('2026-07-03T09:00:00.000Z', 'One.'),
+    ...Array.from({ length: 8 }, (_, index) => assistant(`2026-07-03T09:00:${String(index + 1).padStart(2, '0')}.000Z`)),
+    user('2026-07-03T09:01:00.000Z', 'Two.')
+  ].map((record) => JSON.stringify(record)).join('\n')}\n`);
+  await writeFile(longer, `${[
+    user('2026-07-03T09:00:00.000Z', 'One.'),
+    user('2026-07-03T09:20:00.000Z', 'Two.')
+  ].map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+  const result = await collectSessions({ sources: 'claude', home, cwd: home, days: Infinity });
+
+  assert.equal(result.sessions.length, 1);
+  assert.equal(result.sessions[0].endedAt, '2026-07-03T09:20:00.000Z');
+  assert.equal(result.sessions[0].assistantMessages, 0);
+  assert.equal(result.analysisCandidates[0].locator.path, longer);
+});
+
 test('filters discovery and parsed sessions by an inclusive custom date range', async () => {
   const home = await mkdtemp(join(tmpdir(), 'agent-insight-date-range-'));
   const project = join(home, '.claude', 'projects', 'encoded-project');
@@ -110,7 +255,7 @@ test('filters discovery and parsed sessions by an inclusive custom date range', 
   const outside = join(project, 'outside.jsonl');
   await writeFile(inside, record('inside', '2026-07-03T12:00:00.000Z'));
   await writeFile(outside, record('outside', '2026-06-30T12:00:00.000Z'));
-  await utimes(inside, new Date('2026-07-03T12:00:00.000Z'), new Date('2026-07-03T12:00:00.000Z'));
+  await utimes(inside, new Date('2020-01-01T12:00:00.000Z'), new Date('2020-01-01T12:00:00.000Z'));
   await utimes(outside, new Date('2026-06-30T12:00:00.000Z'), new Date('2026-06-30T12:00:00.000Z'));
 
   const result = await collectSessions({

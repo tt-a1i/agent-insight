@@ -1,7 +1,7 @@
-import { access, mkdir, writeFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { chmod, lstat, mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 const AGENTS = ['claude', 'codex', 'cursor', 'opencode', 'pi'];
 
@@ -49,17 +49,19 @@ Translate the answers into command arguments:
 - Specific agents means one comma-separated \`--source\` value.
 - A 7, 30, or 90 day range means \`--days <number>\`; all history means \`--all\`; custom means \`--start <YYYY-MM-DD> --end <YYYY-MM-DD>\`.
 
+Before preparing the run, determine the exact model ID of the current ${host} model. If the host does not expose it, use the literal \`unknown\`. Never omit \`--model\`.
+
 Then perform this workflow from the project root:
 
-1. Run \`agent-insight prepare --host ${agent} --source <comma-separated-sources> <time-range-arguments>\` and capture the returned run ID.
-2. Run \`agent-insight semantic next --run <run-id>\` and parse its JSON task.
-3. If the task says the run is complete, continue to step 7. Otherwise analyze the task's request with the current ${host} model. Follow its required JSON shape exactly and produce the result object itself, without the task envelope or Markdown fences.
-4. Write only that result object as JSON to the task's exact \`submissionPath\`. Never copy transcript text into another file.
-5. Run \`agent-insight semantic ingest --run <run-id> --task <task-id>\`.
+1. Run \`agent-insight prepare --host ${agent} --model <exact-model-id-or-unknown> --source <comma-separated-sources> <time-range-arguments>\` and capture the returned run ID.
+2. Run \`agent-insight semantic next --run <run-id> --host ${agent} --model <same-exact-model-id-or-unknown>\` and parse its JSON task.
+3. If the task says the run is complete, continue to step 7. If it is an \`aggregate_batch\`, analyze all listed task requests in parallel with the current ${host} model; otherwise analyze the single request. Follow every required JSON shape exactly and produce result objects without task envelopes or Markdown fences.
+4. Write each result object as JSON to that task's exact, unique \`submissionPath\`. Never copy transcript text into another file.
+5. Ingest completed results one at a time with \`agent-insight semantic ingest --run <run-id> --task <task-id> --host ${agent} --model <same-exact-model-id-or-unknown>\`.
 6. Repeat from step 2 until the next task says the run is complete.
-7. Run \`agent-insight semantic finalize --run <run-id>\`, open the generated report, and give the user its location plus a concise evidence-backed summary.
+7. Run \`agent-insight semantic finalize --run <run-id> --host ${agent} --model <same-exact-model-id-or-unknown>\`, open the generated report, and give the user its location plus a concise evidence-backed summary.
 
-If any command or schema validation fails, report the exact stage and preserve the run ID so the user can resume it. Never invent a completed result, silently skip a task, or claim full coverage when the run is incomplete.`;
+If \`semantic next\` returns \`source_changed\`, fail that frozen task with reason \`source_changed\` and continue. If a model call or schema validation fails, retry once when safe. If it still fails, run \`agent-insight semantic fail --run <run-id> --task <task-id> --reason analyzer_failure --host ${agent} --model <same-exact-model-id-or-unknown>\` (use \`invalid_analyzer_response\` for invalid JSON/schema), then continue so the final report exposes partial semantic coverage. If the user interrupts, leave the task pending and preserve the run ID for resumption. Never invent a completed result, silently skip a task, or claim full coverage when the run is incomplete.`;
 }
 
 export function renderIntegration(agent) {
@@ -111,9 +113,9 @@ export function renderIntegration(agent) {
       '          timeArgs.push("--start", start, "--end", end);',
       '        }',
       '',
-      '        const { stdout } = await execFileAsync("agent-insight", ["prepare", "--host", "pi", "--source", sources, ...timeArgs], {',
+      '        const modelId = typeof ctx.model?.id === "string" && ctx.model.id.trim() ? ctx.model.id.trim() : "unknown";',
+      '        const { stdout } = await execFileAsync("agent-insight", ["prepare", "--host", "pi", "--model", modelId, "--source", sources, ...timeArgs], {',
       '          cwd: ctx.cwd,',
-      '          timeout: 60_000,',
       '          maxBuffer: 4 * 1024 * 1024,',
       '        });',
       '        let runId: string | undefined;',
@@ -127,12 +129,12 @@ export function renderIntegration(agent) {
       '',
       '        pi.sendUserMessage([',
       '          `Continue Agent Insights semantic run ${runId} with the current Pi model. Do not start another Pi process or use another model.`,',
-      '          `1. Run agent-insight semantic next --run ${runId} and parse the JSON task.`,',
-      '          "2. If it is not complete, analyze its request, produce only the required result object, and write that JSON to its exact submissionPath. Do not copy transcript text elsewhere.",',
-      '          `3. Run agent-insight semantic ingest --run ${runId} --task <task-id>.`,',
+      '          `1. Run agent-insight semantic next --run ${runId} --host pi --model ${modelId} and parse the JSON task.`,',
+      '          "2. If it is aggregate_batch, analyze all listed requests in parallel with the current Pi model; otherwise analyze the single request. Write each required result JSON to its unique submissionPath. Do not copy transcript text elsewhere.",',
+      '          `3. Ingest completed results one at a time with agent-insight semantic ingest --run ${runId} --task <task-id> --host pi --model ${modelId}.`,',
       '          "4. Repeat steps 1-3 until the next task says complete.",',
-      '          `5. Run agent-insight semantic finalize --run ${runId}, then open and summarize the generated report.`,',
-      '          "On failure, report the exact stage and preserve the run ID. Never silently skip a task.",',
+      '          `5. Run agent-insight semantic finalize --run ${runId} --host pi --model ${modelId}, then open and summarize the generated report.`,',
+      '          `If next returns source_changed, fail that task with reason source_changed. If analysis or validation still fails after one retry, run agent-insight semantic fail --run ${runId} --task <task-id> --reason analyzer_failure --host pi --model ${modelId}, continue the loop, and let the report show partial coverage. On user interruption, preserve the pending run.`,',
       '        ].join("\\n"));',
       '      } catch (error) {',
       '        ctx.ui.notify("agent-insight failed: " + (error instanceof Error ? error.message : String(error)), "error");',
@@ -149,20 +151,46 @@ export function renderIntegration(agent) {
   return `# Agent Insights\n\n${commonBody(agent)}\n`;
 }
 
-async function fileExists(path) {
+async function pathInfo(path) {
   try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
+    return await lstat(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function assertNoSymlinkParents(base, target) {
+  const root = resolve(base);
+  const parent = dirname(resolve(target));
+  const suffix = relative(root, parent);
+  if (suffix.startsWith('..') || resolve(root, suffix) !== parent) throw new Error('Integration target escapes the requested scope.');
+  let current = root;
+  for (const component of suffix.split(/[\\/]+/).filter(Boolean)) {
+    current = join(current, component);
+    const info = await pathInfo(current);
+    if (!info) break;
+    if (info.isSymbolicLink()) throw new Error(`${current} is a symbolic-link parent; refusing to install outside the requested scope.`);
+    if (!info.isDirectory()) throw new Error(`${current} is not a directory.`);
   }
 }
 
 export async function installIntegration({ agent, scope, cwd, home, force = false }) {
   const target = integrationPath({ agent, scope, cwd, home });
-  if (!force && await fileExists(target)) throw new Error(`${target} already exists. Pass --force to replace it.`);
+  await assertNoSymlinkParents(scope === 'user' ? home : cwd, target);
+  const existing = await pathInfo(target);
+  if (existing?.isSymbolicLink()) throw new Error(`${target} is a symbolic link; refusing to follow or replace it.`);
+  if (!force && existing) throw new Error(`${target} already exists. Pass --force to replace it.`);
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-  await writeFile(target, renderIntegration(agent), { mode: 0o600 });
+  const temporary = join(dirname(target), `.agent-insights-${process.pid}-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, renderIntegration(agent), { mode: 0o600, flag: 'wx' });
+    await chmod(temporary, 0o600);
+    await rename(temporary, target);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
   return target;
 }
 

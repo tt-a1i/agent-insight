@@ -1,4 +1,5 @@
-import { chmod, lstat, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
@@ -10,10 +11,14 @@ import { parseSessionFile } from './parse.mjs';
 import { writeReport } from './report.mjs';
 import { HOSTS, resolveInsightRequest } from './interaction.mjs';
 import { FacetCache } from './cache.mjs';
-import { finalizeSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun } from './semantic-run.mjs';
-import { compareParityReports, createBlindSemanticBundle } from './parity.mjs';
+import { failSemanticTask, finalizeSemanticRun, getSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun, semanticSubmissionForTask } from './semantic-run.mjs';
+import { compareParityReports, createBlindSemanticBundle, evaluateBlindSemanticRatings } from './parity.mjs';
 
-const HELP = `agent-insight — local-first cross-agent session insights\n\nUsage:\n  agent-insight insights --host claude|codex|cursor|opencode|pi\n  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD]\n  agent-insight semantic next|ingest|finalize --run <run-id> [--task <task-id>] [--output <directory>]\n  agent-insight cache status|clear|rebuild\n  agent-insight parity compare --reference <report.json> --candidate <report.json> [--output <comparison.json>] [--blind-output <review.json>]\n  agent-insight doctor [--source auto|codex,claude,...] [--json]\n  agent-insight report [--source auto|codex,claude,...] [--days 30|--all]\n                       [--project <path>] [--input <export-file>] [--output <directory>]\n                       [--include-subagents] [--max-file-mb 16] [--max-sessions 100]\n                       [--max-discovery-files 10000]\n  agent-insight install --agent claude|codex|cursor|opencode|pi [--scope project|user] [--force]\n  agent-insight import --source groq|generic --from <export-file>\n\nInsights uses the current host model for semantic analysis. Reports never contain raw prompts, tool output, code, source file paths, or raw session IDs.\n`;
+const HELP = `agent-insight — local-first cross-agent session insights\n\nUsage:\n  agent-insight insights --host claude|codex|cursor|opencode|pi\n  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD]\n  agent-insight semantic next|ingest|finalize --run <run-id> [--task <task-id>] [--output <directory>]\n  agent-insight cache status|clear\n  agent-insight cache rebuild --host <host> --model <exact-model-id> [--source <agents>] [--days 30|--all]\n  agent-insight parity compare --reference <report.json> --candidate <report.json> [--output <comparison.json>] [--blind-output <review.json>]\n  agent-insight parity evaluate --review <rated-review.json> [--seed <secret>] [--output <result.json>]\n  agent-insight doctor [--source auto|codex,claude,...] [--json]\n  agent-insight report [--source auto|codex,claude,...] [--days 30|--all]\n                       [--project <path>] [--input <export-file>] [--output <directory>]\n                       [--include-subagents] [--max-file-mb 16] [--max-sessions 100]\n                       [--max-discovery-files 10000]\n  agent-insight install --agent claude|codex|cursor|opencode|pi [--scope project|user] [--force]\n  agent-insight import --source groq|generic --from <export-file>\n\nInsights uses the current host model for semantic analysis. Reports never contain raw prompts, tool output, code, source file paths, or raw session IDs.\n`;
+
+const PUBLIC_HELP = HELP
+  .replace('semantic next|ingest|finalize --run <run-id> [--task <task-id>] [--output <directory>]', 'semantic next|ingest|fail|finalize --run <run-id> --host <host> --model <exact-model-id-or-unknown> [--task <task-id>] [--reason <failure-code>] [--output <directory>]')
+  .replace('parity compare --reference <report.json> --candidate <report.json>', 'parity compare --reference <report.json> --reference-sha256 <trusted-hash> --candidate <report.json>');
 
 function parseFlags(args) {
   const flags = { _: [] };
@@ -108,14 +113,13 @@ async function prepareFromRequest(request, flags, context) {
     maxSessionsPerSource: flags['max-sessions'] === undefined ? 100_000 : maxSessionsFrom(flags),
     maxDiscoveryFiles: flags['max-discovery-files'] === undefined ? 100_000 : maxDiscoveryFilesFrom(flags)
   });
-  if (collected.analysisCandidates.length === 0) throw new Error('No analyzable sessions were found for the selected agents and time range.');
   const base = join(context.home, '.agent-insight');
   const run = await prepareSemanticRun({
     runsRoot: join(base, 'runs'),
     cache: new FacetCache(join(base, 'cache', 'facets')),
     request,
     candidates: collected.analysisCandidates,
-    analyzer: { host: request.host, model: typeof flags.model === 'string' ? flags.model : null },
+    analyzer: { host: request.host, model: typeof flags.model === 'string' ? flags.model.trim() : 'unknown' },
     diagnostics: collected.diagnostics
   });
   if (!context.quiet) console.log(JSON.stringify({ runId: run.id, manifestPath: run.manifestPath }, null, 2));
@@ -135,7 +139,7 @@ async function runInsights(flags, context) {
     reader?.close();
   }
   const prepared = await prepareFromRequest(request, flags, context);
-  if (!context.quiet) console.log(`Next: agent-insight semantic next --run ${prepared.runId}`);
+  if (!context.quiet) console.log(`Next: agent-insight semantic next --run ${prepared.runId} --host ${request.host} --model ${typeof flags.model === 'string' ? flags.model.trim() : 'unknown'}`);
   return prepared;
 }
 
@@ -146,7 +150,7 @@ function requireHostFlag(value) {
 }
 
 function dateFlag(value, label) {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00.000Z`))) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00.000Z`)) || new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) !== value) {
     throw new Error(`${label} must use YYYY-MM-DD.`);
   }
   return value;
@@ -187,23 +191,42 @@ function semanticPaths(context) {
 
 async function runSemantic(flags, context) {
   const action = flags._[0];
-  if (!['next', 'ingest', 'finalize'].includes(action)) throw new Error('semantic requires next, ingest, or finalize.');
+  if (!['next', 'ingest', 'fail', 'finalize'].includes(action)) throw new Error('semantic requires next, ingest, fail, or finalize.');
   if (typeof flags.run !== 'string') throw new Error('semantic requires --run <run-id>.');
   const paths = semanticPaths(context);
+  const actorHost = requireHostFlag(flags.host);
+  if (typeof flags.model !== 'string' || !flags.model.trim()) throw new Error('semantic requires --model <exact-model-id-or-unknown>.');
+  const actorModel = flags.model.trim();
+  const run = await getSemanticRun({ runsRoot: paths.runsRoot, runId: flags.run });
+  const expectedModel = run.analyzer?.model ?? 'unknown';
+  if (run.analyzer?.host !== actorHost || expectedModel !== actorModel) {
+    throw new Error(`Semantic run belongs to ${run.analyzer?.host}/${expectedModel}; refusing ${actorHost}/${actorModel}.`);
+  }
   if (action === 'next') {
     const task = await nextSemanticTask({ ...paths, runId: flags.run });
     if (!context.quiet) console.log(JSON.stringify(task, null, 2));
     return task;
   }
+  if (action === 'fail') {
+    if (typeof flags.task !== 'string') throw new Error('semantic fail requires --task <task-id>.');
+    const value = await failSemanticTask({ runsRoot: paths.runsRoot, runId: flags.run, taskId: flags.task, reason: String(flags.reason ?? 'analyzer_failure') });
+    if (!context.quiet) console.log(JSON.stringify(value, null, 2));
+    return value;
+  }
   if (action === 'ingest') {
     if (typeof flags.task !== 'string') throw new Error('semantic ingest requires --task <task-id>.');
-    const expected = await nextSemanticTask({ ...paths, runId: flags.run });
-    if (expected.id !== flags.task || typeof expected.submissionPath !== 'string') throw new Error('The submitted task is not the next pending semantic task.');
-    const info = await lstat(expected.submissionPath);
-    if (!info.isFile() || info.isSymbolicLink() || info.size > 2 * 1024 * 1024) throw new Error('Semantic submission must be a regular JSON file no larger than 2 MiB.');
-    const result = JSON.parse(await readFile(expected.submissionPath, 'utf8'));
+    const submissionPath = await semanticSubmissionForTask({ runsRoot: paths.runsRoot, runId: flags.run, taskId: flags.task });
+    const handle = await open(submissionPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    let result;
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > 2 * 1024 * 1024) throw new Error('Semantic submission must be a regular JSON file no larger than 2 MiB.');
+      result = JSON.parse(await handle.readFile('utf8'));
+    } finally {
+      await handle.close();
+    }
     const value = await ingestSemanticResult({ ...paths, runId: flags.run, taskId: flags.task, result });
-    await unlink(expected.submissionPath);
+    await unlink(submissionPath);
     if (!context.quiet) console.log(JSON.stringify(value, null, 2));
     return value;
   }
@@ -224,10 +247,18 @@ async function runCache(flags, context) {
     if (!context.quiet) console.log(JSON.stringify(value, null, 2));
     return value;
   }
-  if (action === 'clear' || action === 'rebuild') {
+  if (action === 'clear') {
     const value = await cache.clear();
-    if (!context.quiet) console.log(`${value} cached facets removed${action === 'rebuild' ? '; the next run will rebuild them' : ''}.`);
+    if (!context.quiet) console.log(`${value} cached facets removed.`);
     return value;
+  }
+  if (action === 'rebuild') {
+    if (typeof flags.host !== 'string' || typeof flags.model !== 'string' || flags.model === 'unknown') {
+      throw new Error('cache rebuild requires --host <host> and --model <exact-model-id>; it creates a semantic rebuild run.');
+    }
+    const removed = await cache.clearForAnalyzer(flags.host, flags.model);
+    const prepared = await runPrepare(flags, context);
+    return { removed, ...prepared };
   }
   throw new Error('cache requires status, clear, or rebuild.');
 }
@@ -241,18 +272,37 @@ async function writePrivateJson(path, value) {
 }
 
 async function runParity(flags, context) {
-  if (flags._[0] !== 'compare') throw new Error('parity requires compare.');
+  if (flags._[0] === 'evaluate') {
+    if (typeof flags.review !== 'string') throw new Error('parity evaluate requires --review <rated-review.json>.');
+    const review = JSON.parse(await readFile(resolve(flags.review), 'utf8'));
+    const evaluation = evaluateBlindSemanticRatings(review, { seed: String(flags.seed ?? '') });
+    if (typeof flags.output === 'string') await writePrivateJson(flags.output, evaluation);
+    if (!context.quiet) console.log(JSON.stringify(evaluation, null, 2));
+    return evaluation;
+  }
+  if (flags._[0] !== 'compare') throw new Error('parity requires compare or evaluate.');
   if (typeof flags.reference !== 'string' || typeof flags.candidate !== 'string') {
     throw new Error('parity compare requires --reference <report.json> and --candidate <report.json>.');
   }
-  const [reference, candidate] = await Promise.all([
-    readFile(resolve(flags.reference), 'utf8').then(JSON.parse),
-    readFile(resolve(flags.candidate), 'utf8').then(JSON.parse)
+  const [referenceText, candidateText] = await Promise.all([
+    readFile(resolve(flags.reference), 'utf8'),
+    readFile(resolve(flags.candidate), 'utf8')
   ]);
-  const comparison = compareParityReports(reference, candidate);
+  const reference = JSON.parse(referenceText);
+  const candidate = JSON.parse(candidateText);
+  const referenceFileHash = createHash('sha256').update(referenceText).digest('hex');
+  const candidateHtmlPath = typeof flags['candidate-html'] === 'string'
+    ? resolve(flags['candidate-html'])
+    : resolve(flags.candidate).replace(/\.json$/i, '.html');
+  const candidateHtml = await readFile(candidateHtmlPath, 'utf8').catch(() => null);
+  const comparison = compareParityReports(reference, candidate, {
+    candidateHtml,
+    referenceFileHash,
+    trustedReferenceFileHash: typeof flags['reference-sha256'] === 'string' ? flags['reference-sha256'].toLowerCase() : null
+  });
   if (typeof flags.output === 'string') await writePrivateJson(flags.output, comparison);
   if (typeof flags['blind-output'] === 'string') {
-    await writePrivateJson(flags['blind-output'], createBlindSemanticBundle(reference, candidate, { seed: String(flags.seed ?? '') }));
+    await writePrivateJson(flags['blind-output'], createBlindSemanticBundle(reference, candidate, { seed: String(flags.seed ?? ''), machineComparison: comparison }));
   }
   if (!context.quiet) console.log(JSON.stringify(comparison, null, 2));
   return comparison;
@@ -310,7 +360,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const flags = parseFlags(rest);
   const context = { cwd, home, ask: options.ask, quiet: Boolean(options.quiet) };
   if (command === 'help' || command === '--help' || command === '-h') {
-    console.log(HELP);
+    console.log(PUBLIC_HELP);
     return;
   }
   if (command === '--version' || command === 'version') {

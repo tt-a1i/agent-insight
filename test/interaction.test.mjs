@@ -71,3 +71,8 @@ test('interactive insights accepts an explicit date range', async () => {
   assert.equal(request.start, '2026-06-01');
   assert.equal(request.end, '2026-06-30');
 });
+
+test('interactive insights rejects impossible calendar dates', async () => {
+  const answers = ['current', 'custom', '2026-02-31', '2026-03-10'];
+  await assert.rejects(resolveInsightRequest({ host: 'claude' }, { ask: async () => answers.shift() }), /YYYY-MM-DD/);
+});

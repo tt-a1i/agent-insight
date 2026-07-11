@@ -41,25 +41,35 @@ function responseStats(values) {
 }
 
 function multiClauding(sessions) {
-  const events = sessions.flatMap((session) => (session.userMessageTimestamps ?? []).map((timestamp) => ({ session: session.id, time: Date.parse(timestamp) }))).filter((event) => Number.isFinite(event.time)).sort((left, right) => left.time - right.time);
+  const events = sessions.flatMap((session) => (session.userMessageTimestamps ?? []).map((timestamp) => ({ session: session.id, timestamp, time: Date.parse(timestamp) }))).filter((event) => Number.isFinite(event.time)).sort((left, right) => left.time - right.time);
   const pairs = new Set();
   const involved = new Set();
-  const overlappingEvents = new Set();
-  for (let left = 0; left < events.length; left += 1) {
-    for (let right = left + 1; right < events.length && events[right].time - events[left].time <= 30 * 60 * 1000; right += 1) {
-      if (events[left].session === events[right].session) continue;
-      const pair = [events[left].session, events[right].session].sort().join(':');
-      pairs.add(pair);
-      involved.add(events[left].session);
-      involved.add(events[right].session);
-      overlappingEvents.add(left);
-      overlappingEvents.add(right);
+  const overlappingMessages = new Set();
+  const latestBySession = new Map();
+  for (let currentIndex = 0; currentIndex < events.length; currentIndex += 1) {
+    const current = events[currentIndex];
+    const previousIndex = latestBySession.get(current.session);
+    if (previousIndex !== undefined && current.time - events[previousIndex].time <= 30 * 60 * 1000) {
+      for (let middleIndex = previousIndex + 1; middleIndex < currentIndex; middleIndex += 1) {
+        const middle = events[middleIndex];
+        if (middle.session === current.session) continue;
+        const pair = JSON.stringify([current.session, middle.session].sort());
+        const previous = events[previousIndex];
+        pairs.add(pair);
+        involved.add(current.session);
+        involved.add(middle.session);
+        overlappingMessages.add(`${previous.timestamp}:${previous.session}`);
+        overlappingMessages.add(`${middle.timestamp}:${middle.session}`);
+        overlappingMessages.add(`${current.timestamp}:${current.session}`);
+        break;
+      }
     }
+    latestBySession.set(current.session, currentIndex);
   }
   return {
     overlapEvents: pairs.size,
     sessionsInvolved: involved.size,
-    userMessagesDuring: overlappingEvents.size
+    userMessagesDuring: overlappingMessages.size
   };
 }
 
@@ -132,7 +142,7 @@ function buildInsightsAggregate(sessions, semantic, sourcesScanned) {
     totalSessions: sessions.length,
     totalSessionsScanned: Math.max(sessions.length, filesScanned),
     sessionsWithFacets: semanticSessions.filter((session) => session.facet).length,
-    dateRange: sessions.length ? { start: dateOnly(sessions[0].startedAt), end: dateOnly(sessions.at(-1).endedAt) } : { start: null, end: null },
+    dateRange: sessions.length ? { start: dateOnly(sessions[0].startedAt), end: dateOnly(sessions.at(-1).startedAt) } : { start: null, end: null },
     totalMessages: userMessages,
     totalDurationHours: rounded(durationMinutes / 60),
     totalInputTokens: sessions.reduce((sum, session) => sum + (session.inputTokens ?? 0), 0),
@@ -241,7 +251,7 @@ function buildRecommendations(totals, projects, sourceCount) {
   return recommendations.slice(0, 3);
 }
 
-export function summarizeSessions(sessions, { days = 30, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 }, semantic = null, eligibility = null } = {}) {
+export function summarizeSessions(sessions, { days = 30, requestedRange = null, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 }, semantic = null, eligibility = null } = {}) {
   const ordered = [...sessions].sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
   const sourceMap = {};
   const projects = {};
@@ -277,12 +287,16 @@ export function summarizeSessions(sessions, { days = 30, sourcesScanned = [], pr
   }
 
   const dateRange = ordered.length
-    ? { start: dateOnly(ordered[0].startedAt), end: dateOnly(ordered.at(-1).endedAt) }
+    ? { start: dateOnly(ordered[0].startedAt), end: dateOnly(ordered.at(-1).startedAt) }
     : { start: null, end: null };
   const projectEntries = sortEntries(projects);
   const sourceCount = Object.keys(sourceMap).length;
   const sections = semantic?.sections ?? {};
   const missingSections = AGGREGATE_TASKS.filter((section) => sections[section] === undefined);
+  const incompleteSources = sourcesScanned.filter((source) => !['available', 'empty'].includes(source.coverage));
+  const changedDuringRun = Number(eligibility?.reasons?.changed_after_prepare ?? 0);
+  const semanticFailures = semantic?.failures ?? [];
+  const dataStatus = incompleteSources.length > 0 || changedDuringRun > 0 || semanticFailures.length > 0 ? 'partial' : 'complete';
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
@@ -294,9 +308,32 @@ export function summarizeSessions(sessions, { days = 30, sourcesScanned = [], pr
     parity: {
       target: 'claude-code/2.1.206',
       structuralStatus: missingSections.length === 0 ? 'complete' : 'partial',
-      missingSections
+      missingSections,
+      dataStatus,
+      incompleteSources: incompleteSources.map((source) => source.source),
+      changedDuringRun,
+      evidenceContext: {
+        sessions: (semantic?.sessions ?? []).filter((session) => session.facet).map((session) => ({
+          id: session.id,
+          source: session.source ?? 'unknown',
+          date: session.date,
+          grounding: (session.facet.evidence ?? []).map((item) => ({
+            messageIndexes: item.messageIndexes,
+            description: item.description
+          }))
+        })).filter((session) => session.grounding.length > 0)
+      }
     },
-    coverage: { requestedDays: days === Infinity ? 'all available' : days, sourcesScanned, projectFilter, eligibility },
+    coverage: {
+      requestedDays: days === Infinity ? 'all available' : days,
+      requestedRange,
+      sourcesScanned,
+      projectFilter,
+      eligibility,
+      cache: semantic?.cache ?? null,
+      semanticFailures,
+      sectionFailures: semantic?.sectionFailures ?? {}
+    },
     dateRange,
     totals,
     sources: sourceMap,
@@ -308,6 +345,9 @@ export function summarizeSessions(sessions, { days = 30, sourcesScanned = [], pr
     semantic: {
       enabled: Boolean(semantic),
       analyzer: semantic?.analyzer ?? null,
+      sessions: (semantic?.sessions ?? []).map(({ id, date, source }) => ({ id, date, source: source ?? 'unknown' })),
+      failures: semanticFailures,
+      sectionFailures: semantic?.sectionFailures ?? {},
       sections
     },
     observations: buildObservations(totals, sourceCount, projectEntries, ordered),
