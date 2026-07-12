@@ -12,20 +12,22 @@ import { writeReport } from './report.mjs';
 import { HOSTS, resolveInsightRequest } from './interaction.mjs';
 import { failSemanticTask, finalizeSemanticRun, getSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun, semanticSubmissionForTask } from './semantic-run.mjs';
 import { compareParityReports, createBlindSemanticBundle, evaluateBlindSemanticRatings } from './parity.mjs';
+import { normalizeLocale } from './i18n.mjs';
 
 const HELP = `agent-insight — local-first cross-agent fused session insights
 
 One-shot fused report: Claude-compatible baseline plus sharp user-audit extensions.
 Uses the current host model only. Independent runs always re-analyze; there is no cross-run cache.
+Default report locale is zh (Simplified Chinese UI + model prose); Claude host HTML chrome stays English for parity.
 
 Usage:
-  agent-insight insights --host claude|codex|cursor|opencode|pi
-  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD]
+  agent-insight insights --host claude|codex|cursor|opencode|pi [--locale zh|en]
+  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD] [--locale zh|en]
   agent-insight semantic next|ingest|fail|finalize --run <run-id> --host <host> --model <exact-model-id-or-unknown> [--task <task-id>] [--reason <failure-code>] [--output <directory>]
   agent-insight parity compare --reference <report.json> --reference-sha256 <trusted-hash> --candidate <report.json> [--output <comparison.json>] [--blind-output <review.json>]
   agent-insight parity evaluate --review <rated-review.json> [--seed <secret>] [--output <result.json>]
   agent-insight doctor [--source auto|codex,claude,...] [--json]
-  agent-insight report [--source auto|codex,claude,...] [--days 30|--all]
+  agent-insight report [--source auto|codex,claude,...] [--days 30|--all] [--locale zh|en]
                        [--project <path>] [--input <export-file>] [--output <directory>]
                        [--include-subagents] [--max-file-mb 16] [--max-sessions 100]
                        [--max-discovery-files 10000]
@@ -113,7 +115,7 @@ async function runReport(flags, context) {
     maxSessionsPerSource: maxSessionsFrom(flags),
     maxDiscoveryFiles: maxDiscoveryFilesFrom(flags)
   });
-  const report = summarizeSessions(sessions, { days, sourcesScanned: diagnostics, projectFilter });
+  const report = summarizeSessions(sessions, { days, sourcesScanned: diagnostics, projectFilter, locale: normalizeLocale(flags.locale) });
   const output = resolve(typeof flags.output === 'string' ? flags.output : join(context.home, '.agent-insight', 'latest'));
   const files = await writeReport(report, output);
   console.log(`Agent Insight ready: ${report.totals.sessions} sessions from ${sources.join(', ') || 'no sources'}`);
@@ -159,6 +161,7 @@ async function runInsights(flags, context) {
   } finally {
     reader?.close();
   }
+  request = { ...request, locale: normalizeLocale(flags.locale) };
   const prepared = await prepareFromRequest(request, flags, context);
   if (!context.quiet) console.log(`Next: agent-insight semantic next --run ${prepared.runId} --host ${request.host} --model ${typeof flags.model === 'string' ? flags.model.trim() : 'unknown'}`);
   return prepared;
@@ -197,7 +200,8 @@ function requestFromFlags(flags) {
     start,
     end,
     semantic: true,
-    fast: Boolean(flags.fast)
+    fast: Boolean(flags.fast),
+    locale: normalizeLocale(flags.locale)
   };
 }
 

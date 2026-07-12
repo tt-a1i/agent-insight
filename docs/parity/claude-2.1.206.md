@@ -580,6 +580,11 @@ examples.
 **[1:1]** the rendered document order is:
 
 1. `Claude Code Insights` heading and subtitle.
+
+> **Agent Insight default (non-Claude hosts):** HTML chrome uses the English brand
+> title `Agent Insight` with Simplified Chinese section labels by default
+> (`--locale zh`). Claude-host / `parityProfile: claude-2.1.206` reports keep the
+> English `Claude Code Insights` shell below for 1:1 parity.
 2. At a Glance.
 3. Fixed table of contents.
 4. Stats row: Messages, Lines, Files, Days, Msgs/Day.

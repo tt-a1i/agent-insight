@@ -24,9 +24,18 @@ import { parseSessionFile } from './parse.mjs';
 import { summarizeSessions } from './analyze.mjs';
 import { writeReport } from './report.mjs';
 import { exportOpenCodeSession } from './opencode.mjs';
+import { normalizeLocale } from './i18n.mjs';
 
 const RUN_SCHEMA = 'agent-insight/semantic-run-v1';
 const PROMPT_VERSION = 'session-facet-v1';
+
+function runLocale(runOrRequest) {
+  return normalizeLocale(runOrRequest?.request?.locale ?? runOrRequest?.locale);
+}
+
+function withLocale(value, locale) {
+  return { ...value, locale };
+}
 
 function requireRunId(runId) {
   const value = String(runId ?? '');
@@ -97,7 +106,8 @@ function aggregateContext(run) {
   return {
     metrics,
     sessions: semanticSessions,
-    sections: run.sections
+    sections: run.sections,
+    locale: runLocale(run)
   };
 }
 
@@ -198,6 +208,7 @@ function initAuditSessionChunks(run, sessionId, messages) {
 
 function auditAggregateContext(run) {
   return {
+    locale: runLocale(run),
     sessions: auditEligibleSessions(run).map((session) => {
       const audit = run.extensions?.userAudit?.sessions?.[session.id];
       return {
@@ -312,14 +323,14 @@ async function resumeActiveTask(runsRoot, run) {
       return {
         id, kind: 'session_chunk', runId: run.id,
         input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages: chunks[index] },
-        request: createSessionChunkRequest(input, chunks[index], index, chunks.length, session.chunkResults.at(-1) ?? null),
+        request: createSessionChunkRequest(withLocale(input, runLocale(run)), chunks[index], index, chunks.length, session.chunkResults.at(-1) ?? null),
         submissionPath
       };
     }
     if (session.analysisMode === 'chunked') {
-      return { id, kind: 'session_facet', runId: run.id, request: createSessionFacetFromChunksRequest(session, session.chunkResults.length ? [session.chunkResults.at(-1)] : []), submissionPath };
+      return { id, kind: 'session_facet', runId: run.id, request: createSessionFacetFromChunksRequest(withLocale(session, runLocale(run)), session.chunkResults.length ? [session.chunkResults.at(-1)] : []), submissionPath };
     }
-    return { id, kind: 'session_facet', runId: run.id, input, request: createSessionFacetRequest(input), submissionPath };
+    return { id, kind: 'session_facet', runId: run.id, input, request: createSessionFacetRequest(withLocale(input, runLocale(run))), submissionPath };
   }
   const context = aggregateContext(run);
   const aggregateChunk = /^aggregate-chunk:([a-z_]+):(\d+)$/.exec(id);
@@ -357,7 +368,7 @@ async function resumeActiveTask(runsRoot, run) {
       kind: 'session_audit_chunk',
       runId: run.id,
       input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages: chunks[index] },
-      request: createSessionAuditChunkRequest(input, chunks[index], index, chunks.length, state?.chunkResults?.at(-1) ?? null),
+      request: createSessionAuditChunkRequest(withLocale(input, runLocale(run)), chunks[index], index, chunks.length, state?.chunkResults?.at(-1) ?? null),
       submissionPath
     };
   }
@@ -375,7 +386,7 @@ async function resumeActiveTask(runsRoot, run) {
         id,
         kind: 'session_audit',
         runId: run.id,
-        request: createSessionAuditFromChunksRequest(session, state.chunkResults.length ? [state.chunkResults.at(-1)] : []),
+        request: createSessionAuditFromChunksRequest(withLocale(session, runLocale(run)), state.chunkResults.length ? [state.chunkResults.at(-1)] : []),
         submissionPath
       };
     }
@@ -384,7 +395,7 @@ async function resumeActiveTask(runsRoot, run) {
       kind: 'session_audit',
       runId: run.id,
       input,
-      request: createSessionAuditRequest(input),
+      request: createSessionAuditRequest(withLocale(input, runLocale(run))),
       submissionPath
     };
   }
@@ -544,7 +555,7 @@ export async function prepareSemanticRun({ runsRoot, request, candidates, analyz
       userMessageCount: input.userMessageCount,
       durationMinutes: input.durationMinutes,
       messageCount: input.messages.length,
-      analysisMode: createSessionFacetRequest(input).prompt.length > 30_000 ? 'chunked' : 'direct',
+      analysisMode: createSessionFacetRequest(withLocale(input, normalizeLocale(request.locale))).prompt.length > 30_000 ? 'chunked' : 'direct',
       chunkMessageIndexes: [],
       chunkCount: 0,
       chunkResults: [],
@@ -569,7 +580,7 @@ export async function prepareSemanticRun({ runsRoot, request, candidates, analyz
     schema: RUN_SCHEMA,
     id,
     createdAt: new Date().toISOString(),
-    request: { ...request, days: request.days === Infinity ? 'all' : request.days },
+    request: { ...request, days: request.days === Infinity ? 'all' : request.days, locale: normalizeLocale(request.locale) },
     analyzer: { host: analyzer.host, model: analyzer.model ?? null },
     diagnostics: runDiagnostics,
     sessions,
@@ -618,7 +629,7 @@ export async function nextSemanticTask({ runsRoot, runId }) {
             await writeManifest(runsRoot, run);
             continue;
           }
-          let request = createSessionAuditRequest(input);
+          let request = createSessionAuditRequest(withLocale(input, runLocale(run)));
           let state = auditSessionChunkState(run, auditSession.id);
           if (request.prompt.length > 30_000 || state?.chunkCount) {
             if (!state?.chunkCount) state = initAuditSessionChunks(run, auditSession.id, input.messages);
@@ -626,7 +637,7 @@ export async function nextSemanticTask({ runsRoot, runId }) {
             const chunkIndex = state.chunkResults.length;
             if (chunkIndex < state.chunkCount) {
               const chunkRequest = createSessionAuditChunkRequest(
-                input,
+                withLocale(input, runLocale(run)),
                 chunks[chunkIndex],
                 chunkIndex,
                 chunks.length,
@@ -644,7 +655,7 @@ export async function nextSemanticTask({ runsRoot, runId }) {
                 submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
               });
             }
-            request = createSessionAuditFromChunksRequest(auditSession, state.chunkResults.length ? [state.chunkResults.at(-1)] : []);
+            request = createSessionAuditFromChunksRequest(withLocale(auditSession, runLocale(run)), state.chunkResults.length ? [state.chunkResults.at(-1)] : []);
             if (request.prompt.length > 30_000) throw new Error('Audit session safety limit exceeded for final session synthesis.');
             return exposeTask(runsRoot, run, {
               id: `audit:session:${auditSession.id}`,
@@ -765,7 +776,7 @@ export async function nextSemanticTask({ runsRoot, runId }) {
           kind: 'session_chunk',
           runId,
           input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages: chunks[chunkIndex] },
-            request: createSessionChunkRequest(input, chunks[chunkIndex], chunkIndex, chunks.length, session.chunkResults.at(-1) ?? null),
+            request: createSessionChunkRequest(withLocale(input, runLocale(run)), chunks[chunkIndex], chunkIndex, chunks.length, session.chunkResults.at(-1) ?? null),
           submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
         }, chunks[chunkIndex]);
       }
@@ -773,7 +784,7 @@ export async function nextSemanticTask({ runsRoot, runId }) {
         id: `session:${session.id}`,
         kind: 'session_facet',
         runId,
-        request: createSessionFacetFromChunksRequest(session, session.chunkResults.length ? [session.chunkResults.at(-1)] : []),
+        request: createSessionFacetFromChunksRequest(withLocale(session, runLocale(run)), session.chunkResults.length ? [session.chunkResults.at(-1)] : []),
         submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
       });
     }
@@ -782,7 +793,7 @@ export async function nextSemanticTask({ runsRoot, runId }) {
       kind: 'session_facet',
       runId,
       input,
-      request: createSessionFacetRequest(input),
+      request: createSessionFacetRequest(withLocale(input, runLocale(run))),
       submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
     }, input.messages);
   }
@@ -1111,7 +1122,8 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
     sourcesScanned: run.diagnostics,
     semantic,
     extensions,
-    eligibility: run.eligibility
+    eligibility: run.eligibility,
+    locale: runLocale(run)
   });
   const files = await writeReport(report, outputDirectory);
   run.status = run.failures?.length || run.extensionFailures?.userAudit ? 'partial' : 'complete';

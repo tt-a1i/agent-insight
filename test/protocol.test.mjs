@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { analyzeSessionFacet, validateSessionFacet } from '../src/protocol.mjs';
+import { analyzeSessionFacet, createSessionFacetRequest, validateSessionFacet } from '../src/protocol.mjs';
 import { createAggregateChunkRequest, createAggregateRequest, createAtAGlanceChunkRequest, splitAggregateSections, splitAggregateSessions, validateAggregateChunkResult, validateAggregateResult } from '../src/aggregate-protocol.mjs';
+import { createSessionAuditRequest } from '../src/audit-protocol.mjs';
 
 test('session facet analysis validates concrete evidence including quotations', async () => {
   const secret = 'repair the private payment parser';
@@ -327,4 +328,30 @@ test('large completed sections use bounded rolling chunks before at-a-glance syn
   const request = createAtAGlanceChunkRequest({ sections }, groups[0], 0, groups.length, null);
   assert.ok(request.prompt.length < 30_000);
   assert.equal(request.section, 'at_a_glance');
+});
+
+test('zh locale appends Simplified Chinese prose instruction without changing JSON keys', () => {
+  const input = {
+    source: 'cursor',
+    opaqueId: 'opaque-zh',
+    sessionId: 'session-zh',
+    date: '2026-07-01',
+    durationMinutes: 5,
+    messages: [{ index: 1, role: 'user', text: 'fix the parser' }],
+    locale: 'zh'
+  };
+  const facet = createSessionFacetRequest(input);
+  assert.match(facet.prompt, /Write all human-readable prose values in Simplified Chinese/);
+  assert.match(facet.prompt, /Keep JSON keys and taxonomy enum values unchanged/);
+  assert.doesNotMatch(createSessionFacetRequest({ ...input, locale: 'en' }).prompt, /Simplified Chinese/);
+
+  const audit = createSessionAuditRequest(input);
+  assert.match(audit.prompt, /Simplified Chinese/);
+
+  const aggregate = createAggregateRequest('interaction_style', {
+    locale: 'zh',
+    metrics: { totalSessions: 1 },
+    sessions: [{ id: 'opaque-zh', date: '2026-07-01', facet: { underlyingGoal: 'g', briefSummary: 'b', goalCategories: {}, outcome: 'fully_achieved', userSatisfactionCounts: {}, agentHelpfulness: 'very_helpful', sessionType: 'single_task', frictionCounts: {}, frictionDetail: '', primarySuccess: 'none', evidence: [] } }]
+  });
+  assert.match(aggregate.prompt, /Simplified Chinese/);
 });

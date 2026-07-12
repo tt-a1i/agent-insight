@@ -1,14 +1,14 @@
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { reportChrome } from './i18n.mjs';
 
 const escapeHtml = (value) => String(value)
   .replaceAll('&', '&amp;')
   .replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;')
-  .replaceAll('"', '&quot;')
-  .replaceAll("'", '&#39;');
+  .replaceAll('"', '&quot;');
 
-const number = (value) => new Intl.NumberFormat('en-US').format(value);
+const number = (value, locale = 'en-US') => new Intl.NumberFormat(locale).format(value);
 const escapeMarkdown = (value) => String(value).replace(/([\\\`*_{}\[\]<>()#+\-.!|])/g, '\\$1');
 const coverageNumber = (value) => value === undefined || value === null ? '—' : number(value);
 
@@ -55,7 +55,7 @@ function semanticFailureNote(report) {
   return notes.join(' ');
 }
 
-function renderFindingCard(finding, evidenceSessions = []) {
+function renderFindingCard(finding, evidenceSessions = [], t) {
   const locators = (finding.locators ?? []).map((locator) => {
     const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
     const label = session
@@ -64,11 +64,11 @@ function renderFindingCard(finding, evidenceSessions = []) {
     return `${label} · messages ${locator.messageIndexes.join(', ')}`;
   }).join('; ');
   const quotes = (finding.quotations ?? []).map((quotation) => `<blockquote>${escapeHtml(quotation)}</blockquote>`).join('');
-  const count = finding.occurrenceCount == null ? '' : `<p class="muted">Seen about ${number(finding.occurrenceCount)} time${finding.occurrenceCount === 1 ? '' : 's'}.</p>`;
-  return `<article class="prose-card audit-finding" data-severity="${escapeHtml(finding.severity)}" data-posture="${escapeHtml(finding.evidencePosture)}"><p class="muted">${escapeHtml(finding.category)} · ${escapeHtml(finding.severity)} · ${escapeHtml(finding.evidencePosture.replaceAll('_', ' '))}</p><h3>${escapeHtml(finding.accusation)}</h3><p>${escapeHtml(finding.explanation)}</p>${quotes}<p><strong>Better alternative:</strong> ${escapeHtml(finding.betterAlternative)}</p>${count}<p class="evidence">Evidence: ${escapeHtml(locators || 'unavailable')}</p></article>`;
+  const count = finding.occurrenceCount == null ? '' : `<p class="muted">${escapeHtml(t.audit.seenAbout(finding.occurrenceCount))}</p>`;
+  return `<article class="prose-card audit-finding" data-severity="${escapeHtml(finding.severity)}" data-posture="${escapeHtml(finding.evidencePosture)}"><p class="muted">${escapeHtml(finding.category)} · ${escapeHtml(finding.severity)} · ${escapeHtml(finding.evidencePosture.replaceAll('_', ' '))}</p><h3>${escapeHtml(finding.accusation)}</h3><p>${escapeHtml(finding.explanation)}</p>${quotes}<p><strong>${escapeHtml(t.audit.betterAlternative)}</strong> ${escapeHtml(finding.betterAlternative)}</p>${count}<p class="evidence">${escapeHtml(t.audit.evidence)} ${escapeHtml(locators || t.audit.unavailable)}</p></article>`;
 }
 
-function renderStrengthCard(item, evidenceSessions = []) {
+function renderStrengthCard(item, evidenceSessions = [], t) {
   const quotes = (item.quotations ?? []).map((quotation) => `<blockquote>${escapeHtml(quotation)}</blockquote>`).join('');
   const locators = (item.locators ?? []).map((locator) => {
     const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
@@ -77,10 +77,10 @@ function renderStrengthCard(item, evidenceSessions = []) {
       : locator.sessionId;
     return `${label} · messages ${locator.messageIndexes.join(', ')}`;
   }).join('; ');
-  return `<article class="prose-card"><h3>${escapeHtml(item.habit)}</h3><p>${escapeHtml(item.explanation)}</p>${quotes}${locators ? `<p class="evidence">Evidence: ${escapeHtml(locators)}</p>` : ''}</article>`;
+  return `<article class="prose-card"><h3>${escapeHtml(item.habit)}</h3><p>${escapeHtml(item.explanation)}</p>${quotes}${locators ? `<p class="evidence">${escapeHtml(t.audit.evidence)} ${escapeHtml(locators)}</p>` : ''}</article>`;
 }
 
-function renderSelfDefeatingCard(item, evidenceSessions = []) {
+function renderSelfDefeatingCard(item, evidenceSessions = [], t) {
   const quotes = (item.quotations ?? []).map((quotation) => `<blockquote>${escapeHtml(quotation)}</blockquote>`).join('');
   const locators = (item.locators ?? []).map((locator) => {
     const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
@@ -89,20 +89,20 @@ function renderSelfDefeatingCard(item, evidenceSessions = []) {
       : locator.sessionId;
     return `${label} · messages ${locator.messageIndexes.join(', ')}`;
   }).join('; ');
-  return `<article class="prose-card"><h3>${escapeHtml(item.pattern)}</h3><p class="muted">Intent: ${escapeHtml(item.intent)}</p><p>${escapeHtml(item.explanation)}</p>${quotes}<p class="evidence">Evidence: ${escapeHtml(locators || 'unavailable')}</p></article>`;
+  return `<article class="prose-card"><h3>${escapeHtml(item.pattern)}</h3><p class="muted">${escapeHtml(t.audit.intent)} ${escapeHtml(item.intent)}</p><p>${escapeHtml(item.explanation)}</p>${quotes}<p class="evidence">${escapeHtml(t.audit.evidence)} ${escapeHtml(locators || t.audit.unavailable)}</p></article>`;
 }
 
-function renderAutomationCard(item) {
-  return `<article class="prose-card"><p class="muted">${escapeHtml(item.type)} · ${escapeHtml(item.frequency)}</p><h3>${escapeHtml(item.name)}</h3><p><strong>Trigger:</strong> ${escapeHtml(item.trigger)}</p><p><strong>Inputs:</strong> ${escapeHtml((item.inputs ?? []).join('; '))}</p><p><strong>Outputs:</strong> ${escapeHtml((item.outputs ?? []).join('; '))}</p><p>${escapeHtml(item.rationale)}</p><p class="muted"><strong>Over-automation risk:</strong> ${escapeHtml(item.overAutomationRisk)}</p></article>`;
+function renderAutomationCard(item, t) {
+  return `<article class="prose-card"><p class="muted">${escapeHtml(item.type)} · ${escapeHtml(item.frequency)}</p><h3>${escapeHtml(item.name)}</h3><p><strong>${escapeHtml(t.audit.trigger)}</strong> ${escapeHtml(item.trigger)}</p><p><strong>${escapeHtml(t.audit.inputs)}</strong> ${escapeHtml((item.inputs ?? []).join('; '))}</p><p><strong>${escapeHtml(t.audit.outputs)}</strong> ${escapeHtml((item.outputs ?? []).join('; '))}</p><p>${escapeHtml(item.rationale)}</p><p class="muted"><strong>${escapeHtml(t.audit.overAutomationRisk)}</strong> ${escapeHtml(item.overAutomationRisk)}</p></article>`;
 }
 
-function renderUserAudit(report) {
+function renderUserAudit(report, t) {
   const audit = report.extensions?.userAudit;
   if (!audit || audit.status === 'skipped') return '';
   const evidenceSessions = report.semantic?.sessions ?? [];
   if (audit.status === 'incomplete') {
     const reason = audit.failure?.reason ?? audit.reason ?? 'incomplete';
-    return `<section data-extension-section="user_audit"><h2>Three hard truths</h2><div class="empty">User audit extension coverage is incomplete (${escapeHtml(reason.replaceAll('_', ' '))}). Baseline Claude sections above remain available.</div></section>`;
+    return `<section data-extension-section="user_audit"><h2>${escapeHtml(t.audit.threeHardTruths)}</h2><div class="empty">${escapeHtml(t.audit.incomplete(reason.replaceAll('_', ' ')))}</div></section>`;
   }
   if (audit.status !== 'complete' || !audit.aggregate) return '';
   const top = audit.aggregate.topThree ?? [];
@@ -112,14 +112,14 @@ function renderUserAudit(report) {
   const automation = audit.aggregate.automationCandidates ?? [];
   const leverage = audit.aggregate.highestLeverageChange;
   const leverageHtml = leverage
-    ? `<section data-extension-section="user_audit_leverage"><h2>One highest-leverage change</h2><p class="muted">One move. No streaks, no trackers, no longitudinal homework.</p><article class="prose-card"><h3>${escapeHtml(leverage.change)}</h3><p>${escapeHtml(leverage.rationale)}</p></article></section>`
+    ? `<section data-extension-section="user_audit_leverage"><h2>${escapeHtml(t.audit.leverage)}</h2><p class="muted">${escapeHtml(t.audit.leverageLead)}</p><article class="prose-card"><h3>${escapeHtml(leverage.change)}</h3><p>${escapeHtml(leverage.rationale)}</p></article></section>`
     : '';
   return [
-    `<section data-extension-section="user_audit"><h2>Three hard truths</h2><p class="muted">The highest-impact habits worth confronting first.</p>${sectionCards(top, (finding) => renderFindingCard(finding, evidenceSessions))}</section>`,
-    `<section data-extension-section="user_audit_all"><h2>All findings</h2><p class="muted">Every remaining distinct issue, severity-ordered.</p>${sectionCards(remaining, (finding) => renderFindingCard(finding, evidenceSessions))}</section>`,
-    `<section data-extension-section="user_audit_self_defeating"><h2>Habits that undercut you</h2><p class="muted">Recurring self-defeating phrases and patterns, deduplicated by intent.</p>${sectionCards(patterns, (item) => renderSelfDefeatingCard(item, evidenceSessions))}</section>`,
-    `<section data-extension-section="user_audit_strengths"><h2>Habits worth keeping</h2><p class="muted">Effective interaction habits that should survive the roast.</p>${sectionCards(strengths, (item) => renderStrengthCard(item, evidenceSessions))}</section>`,
-    `<section data-extension-section="user_audit_automation"><h2>Automation candidates</h2><p class="muted">Advisory only. Report generation never writes Skills, commands, templates, or host config.</p>${sectionCards(automation, renderAutomationCard)}</section>`,
+    `<section data-extension-section="user_audit"><h2>${escapeHtml(t.audit.threeHardTruths)}</h2><p class="muted">${escapeHtml(t.audit.threeHardTruthsLead)}</p>${sectionCards(top, (finding) => renderFindingCard(finding, evidenceSessions, t), t)}</section>`,
+    `<section data-extension-section="user_audit_all"><h2>${escapeHtml(t.audit.allFindings)}</h2><p class="muted">${escapeHtml(t.audit.allFindingsLead)}</p>${sectionCards(remaining, (finding) => renderFindingCard(finding, evidenceSessions, t), t)}</section>`,
+    `<section data-extension-section="user_audit_self_defeating"><h2>${escapeHtml(t.audit.selfDefeating)}</h2><p class="muted">${escapeHtml(t.audit.selfDefeatingLead)}</p>${sectionCards(patterns, (item) => renderSelfDefeatingCard(item, evidenceSessions, t), t)}</section>`,
+    `<section data-extension-section="user_audit_strengths"><h2>${escapeHtml(t.audit.strengths)}</h2><p class="muted">${escapeHtml(t.audit.strengthsLead)}</p>${sectionCards(strengths, (item) => renderStrengthCard(item, evidenceSessions, t), t)}</section>`,
+    `<section data-extension-section="user_audit_automation"><h2>${escapeHtml(t.audit.automation)}</h2><p class="muted">${escapeHtml(t.audit.automationLead)}</p>${sectionCards(automation, (item) => renderAutomationCard(item, t), t)}</section>`,
     leverageHtml
   ].join('');
 }
@@ -208,12 +208,17 @@ function entries(value, order) {
   return items.sort(([, left], [, right]) => right - left).slice(0, 6);
 }
 
-function barChart(label, value, { order } = {}) {
+function barChart(label, value, { order, t } = {}) {
   const items = Array.isArray(value) ? value : entries(value, order);
-  const emptyLabel = { 'Response time distribution': 'No response time data', 'Time of day': 'No time data', 'Tool errors': 'No tool errors' }[label] ?? 'No data';
-  if (!items.length) return `<div class="empty">${emptyLabel}</div><table class="sr-only" aria-label="${escapeHtml(label)} data"><tbody></tbody></table>`;
+  const fmt = (n) => number(n, t?.numberLocale ?? 'en-US');
+  const emptyLabel = {
+    'Response time distribution': t?.sections.noResponseTimeData,
+    'Time of day': t?.sections.noTimeData,
+    'Tool errors': t?.sections.noToolErrors
+  }[label] ?? t?.sections.noData ?? 'No data';
+  if (!items.length) return `<div class="empty">${escapeHtml(emptyLabel)}</div><table class="sr-only" aria-label="${escapeHtml(label)} data"><tbody></tbody></table>`;
   const maximum = Math.max(1, ...items.map(([, count]) => Number(count)));
-  return `<div class="bar-chart">${items.map(([name, count]) => `<div class="bar-row"><span>${escapeHtml(name)}</span><div class="bar-track"><i style="width:${Math.round((Number(count) / maximum) * 100)}%"></i></div><strong>${number(count)}</strong></div>`).join('')}</div><table class="sr-only" aria-label="${escapeHtml(label)} data"><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${items.map(([name, count]) => `<tr><td>${escapeHtml(name)}</td><td>${number(count)}</td></tr>`).join('')}</tbody></table>`;
+  return `<div class="bar-chart">${items.map(([name, count]) => `<div class="bar-row"><span>${escapeHtml(name)}</span><div class="bar-track"><i style="width:${Math.round((Number(count) / maximum) * 100)}%"></i></div><strong>${fmt(count)}</strong></div>`).join('')}</div><table class="sr-only" aria-label="${escapeHtml(label)} data"><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${items.map(([name, count]) => `<tr><td>${escapeHtml(name)}</td><td>${fmt(count)}</td></tr>`).join('')}</tbody></table>`;
 }
 
 function responseTimeBuckets(values) {
@@ -225,24 +230,32 @@ function responseTimeBuckets(values) {
   return buckets.map(([label, minimum, maximum]) => [label, (values ?? []).filter((value) => value >= minimum && value < maximum).length]);
 }
 
-function timeOfDayBuckets(messageHours) {
+function timeOfDayBuckets(messageHours, t) {
   const total = (minimum, maximum) => Object.entries(messageHours ?? {}).reduce((sum, [hour, count]) => {
     const value = Number(hour);
     return sum + (value >= minimum && value < maximum ? Number(count) : 0);
   }, 0);
-  const buckets = [['Morning', total(6, 12)], ['Afternoon', total(12, 18)], ['Evening', total(18, 24)], ['Night', total(0, 6)]];
+  const buckets = [
+    [t?.sections.morning ?? 'Morning', total(6, 12)],
+    [t?.sections.afternoon ?? 'Afternoon', total(12, 18)],
+    [t?.sections.evening ?? 'Evening', total(18, 24)],
+    [t?.sections.night ?? 'Night', total(0, 6)]
+  ];
   return buckets.some(([, count]) => count > 0) ? buckets : [];
 }
 
-function proseCard(title, text) {
-  return `<article class="prose-card"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(text ?? 'Analysis unavailable.')}</p></article>`;
+function proseCard(title, text, t) {
+  return `<article class="prose-card"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(text ?? t?.sections.analysisUnavailable ?? 'Analysis unavailable.')}</p></article>`;
 }
 
-function sectionCards(items, renderer) {
-  return items?.length ? `<div class="card-grid">${items.map(renderer).join('')}</div>` : '<div class="empty">This section is unavailable for the current coverage.</div>';
+function sectionCards(items, renderer, t) {
+  return items?.length ? `<div class="card-grid">${items.map(renderer).join('')}</div>` : `<div class="empty">${escapeHtml(t?.sections.sectionUnavailable ?? 'This section is unavailable for the current coverage.')}</div>`;
 }
 
 function renderHtmlLegacy(report) {
+  const chrome = reportChrome(report);
+  const { brandTitle, htmlLang, t } = chrome;
+  const fmt = (value) => number(value, t.numberLocale);
   const insights = report.insights ?? {};
   const semantic = report.semantic?.sections ?? {};
   const evidenceSessions = report.semantic?.sessions ?? [];
@@ -255,24 +268,29 @@ function renderHtmlLegacy(report) {
   const suggestions = semantic.suggestions ?? {};
   const horizon = semantic.on_the_horizon ?? {};
   const ending = semantic.fun_ending ?? {};
-  const range = insights.dateRange?.start ? `${insights.dateRange.start} to ${insights.dateRange.end}` : 'No eligible sessions';
-  const discoveredSuffix = (insights.totalSessionsScanned ?? 0) > (insights.totalSessions ?? 0) ? ` (${number(insights.totalSessionsScanned)} total)` : '';
-  const subtitle = `${number(insights.totalMessages ?? 0)} messages across ${number(insights.totalSessions ?? 0)} sessions${discoveredSuffix} | ${range}`;
-  const statCards = [
+  const range = insights.dateRange?.start ? `${insights.dateRange.start} to ${insights.dateRange.end}` : t.noEligibleSessions;
+  const discoveredSuffix = (insights.totalSessionsScanned ?? 0) > (insights.totalSessions ?? 0)
+    ? (chrome.locale === 'zh' ? `（共 ${fmt(insights.totalSessionsScanned)} 个）` : ` (${fmt(insights.totalSessionsScanned)} total)`)
+    : '';
+  const subtitle = t.subtitle(fmt(insights.totalMessages ?? 0), fmt(insights.totalSessions ?? 0), discoveredSuffix, range);
+  const metricDefs = [
     ['Messages', insights.totalMessages ?? 0],
-    ['Lines', `+${number(insights.totalLinesAdded ?? 0)}/-${number(insights.totalLinesRemoved ?? 0)}`],
+    ['Lines', `+${fmt(insights.totalLinesAdded ?? 0)}/-${fmt(insights.totalLinesRemoved ?? 0)}`],
     ['Files', insights.totalFilesModified ?? 0],
     ['Days', insights.daysActive ?? 0],
     ['Msgs/Day', insights.messagesPerDay ?? 0]
-  ].map(([label, value]) => `<article class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`).join('');
-  const coverageRows = (report.coverage?.sourcesScanned ?? []).map((source) => `<tr><td>${escapeHtml(source.source)}</td><td>${escapeHtml(source.coverage)}</td><td>${coverageNumber(source.filesFound)}</td><td>${coverageNumber(source.filesSelected)}</td><td>${coverageNumber(source.filesLimited)}</td><td>${coverageNumber(source.filesPartial)}</td><td>${coverageNumber(source.filesSkipped)}</td><td>${escapeHtml(coverageNotes(source))}</td></tr>`).join('') || '<tr><td colspan="8">No source probes ran.</td></tr>';
+  ];
+  const statCards = metricDefs.map(([key, value]) => `<article class="metric"><span>${escapeHtml(t.metrics[key])}</span><strong>${escapeHtml(typeof value === 'number' ? fmt(value) : value)}</strong></article>`).join('');
+  const coverageRows = (report.coverage?.sourcesScanned ?? []).map((source) => `<tr><td>${escapeHtml(source.source)}</td><td>${escapeHtml(source.coverage)}</td><td>${coverageNumber(source.filesFound)}</td><td>${coverageNumber(source.filesSelected)}</td><td>${coverageNumber(source.filesLimited)}</td><td>${coverageNumber(source.filesPartial)}</td><td>${coverageNumber(source.filesSkipped)}</td><td>${escapeHtml(coverageNotes(source))}</td></tr>`).join('') || `<tr><td colspan="8">${escapeHtml(t.sections.noSourceProbes)}</td></tr>`;
   const outcomeOrder = ['not_achieved', 'partially_achieved', 'mostly_achieved', 'fully_achieved', 'unclear_from_transcript'];
   const satisfactionOrder = ['frustrated', 'dissatisfied', 'likely_satisfied', 'satisfied', 'happy', 'unsure'];
-  const toc = `<nav class="toc" aria-label="Report sections"><a href="#what-you-work-on">What You Work On</a><a href="#how-you-use">How You Use CC</a><a href="#impressive-things">Impressive Things</a><a href="#where-things-go-wrong">Where Things Go Wrong</a><a href="#features-to-try">Features to Try</a><a href="#new-usage-patterns">New Usage Patterns</a><a href="#on-the-horizon">On the Horizon</a><span aria-disabled="true">Team Feedback</span></nav>`;
+  const toc = `<nav class="toc" aria-label="${escapeHtml(t.tocAria)}"><a href="#what-you-work-on">${escapeHtml(t.toc.whatYouWorkOn)}</a><a href="#how-you-use">${escapeHtml(t.toc.howYouUse)}</a><a href="#impressive-things">${escapeHtml(t.toc.impressiveThings)}</a><a href="#where-things-go-wrong">${escapeHtml(t.toc.whereThingsGoWrong)}</a><a href="#features-to-try">${escapeHtml(t.toc.featuresToTry)}</a><a href="#new-usage-patterns">${escapeHtml(t.toc.newUsagePatterns)}</a><a href="#on-the-horizon">${escapeHtml(t.toc.onTheHorizon)}</a><span aria-disabled="true">${escapeHtml(t.toc.teamFeedback)}</span></nav>`;
   const utcHours = JSON.stringify(insights.messageHours ?? {});
-  const timeChart = `<label class="timezone">Timezone <select id="time-zone"><option value="-8">PT (UTC-8)</option><option value="-5">ET (UTC-5)</option><option value="0">London (UTC)</option><option value="1">CET (UTC+1)</option><option value="9">Tokyo (UTC+9)</option><option value="custom">Local / custom UTC offset</option></select></label><div id="time-chart" data-utc-hours="${escapeHtml(utcHours)}">${barChart('Time of day', timeOfDayBuckets(insights.messageHours))}</div>`;
-  const timezoneScript = `<script>(()=>{const select=document.getElementById('time-zone');const root=document.getElementById('time-chart');if(!select||!root)return;const source=JSON.parse(root.dataset.utcHours||'{}');const rows=[...root.querySelectorAll('.bar-row')];const render=(offset)=>{const counts=[0,0,0,0];for(const [hour,count] of Object.entries(source)){const shifted=(Number(hour)+offset+24)%24;const index=shifted>=6&&shifted<12?0:shifted>=12&&shifted<18?1:shifted>=18?2:3;counts[index]+=Number(count)||0}const maximum=Math.max(1,...counts);rows.forEach((row,index)=>{row.querySelector('strong').textContent=String(counts[index]);row.querySelector('i').style.width=Math.round(counts[index]/maximum*100)+'%'})};const local=-new Date().getTimezoneOffset()/60;const exact=[...select.options].find((option)=>Number(option.value)===local);if(exact)select.value=exact.value;else select.value='custom';render(local);select.addEventListener('change',()=>{let offset=Number(select.value);if(select.value==='custom'){const answer=window.prompt('UTC offset in hours',String(local));offset=Number(answer);if(!Number.isFinite(offset)||offset< -12||offset>14){select.value=exact?.value??'custom';offset=local}}render(offset)})})();</script>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Claude Code Insights</title><style>:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,sans-serif;background:#0d1118;color:#eef3fb;--panel:#151c27;--line:#273449;--muted:#91a0b6;--accent:#78a9ff}*{box-sizing:border-box}body{max-width:1160px;margin:0 auto;padding:48px 24px 80px;background:radial-gradient(circle at 92% 0,#183b68 0,transparent 32rem)}h1{font-size:46px;letter-spacing:-.055em;margin:0 0 8px}h2{margin:46px 0 16px;font-size:22px;letter-spacing:-.02em}h3{font-size:15px;margin:0 0 9px}.muted,.evidence{color:var(--muted)}.evidence{font-size:12px;margin-top:12px}.metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:28px 0}.metric,.panel,.prose-card,.insight-card{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:18px}.metric span{display:block;color:var(--muted);font-size:12px}.metric strong{font-size:25px}.glance,.card-grid,.two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.insight-card p,.prose-card p,.panel p{line-height:1.6;color:#cad4e3;margin:0}.panel-title{font-size:13px;color:var(--muted);margin-bottom:14px}.bar-row{display:grid;grid-template-columns:minmax(90px,1fr) 3fr auto;gap:12px;align-items:center;margin:10px 0;font-size:13px}.bar-track{height:8px;border-radius:99px;background:#243044;overflow:hidden}.bar-track i{display:block;height:100%;background:linear-gradient(90deg,#568ee8,#8fb8ff);border-radius:99px}.empty{padding:18px;color:var(--muted);border:1px dashed var(--line);border-radius:12px}.callout{padding:16px 18px;border-left:3px solid var(--accent);background:#132033;border-radius:0 12px 12px 0;margin:14px 0}.copy{font-family:ui-monospace,monospace;background:#0c121c;border:1px solid var(--line);padding:12px;border-radius:9px;white-space:pre-wrap}.table-wrap{overflow:auto;border-radius:14px}table:not(.sr-only){width:100%;border-collapse:collapse;background:var(--panel)}td,th{padding:11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.status{display:inline-flex;padding:5px 9px;border-radius:99px;background:#172b24;color:#8be0ad;font-size:12px}.status.partial{background:#302817;color:#ffd675}.toc{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0}.toc a,.toc span{color:#bfd6ff;background:#121b29;border:1px solid var(--line);padding:8px 10px;border-radius:9px;font-size:12px;text-decoration:none}.toc span{color:var(--muted)}.timezone{display:flex;gap:10px;align-items:center;color:var(--muted);font-size:12px;margin-bottom:12px}.timezone select{background:#0c121c;color:#eef3fb;border:1px solid var(--line);border-radius:8px;padding:6px}@media(max-width:760px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.glance,.card-grid,.two-col{grid-template-columns:1fr}h1{font-size:36px}}</style></head><body><header><h1>Claude Code Insights</h1><p class="subtitle">${escapeHtml(subtitle)}</p><p class="muted">Analyzer ${escapeHtml(report.semantic?.analyzer?.host ?? 'local')} / ${escapeHtml(report.semantic?.analyzer?.model ?? 'unknown')}</p><span class="status ${report.parity?.structuralStatus === 'complete' ? '' : 'partial'}">${escapeHtml(report.parity?.structuralStatus ?? 'partial')} parity coverage</span></header>${toc}<section class="metrics">${statCards}</section><section><h2>At a Glance</h2><div class="glance">${proseCard("What's working", glance.whatsWorking)}${proseCard("What's hindering you", glance.whatsHindering)}${proseCard('Quick wins to try', glance.quickWins)}${proseCard('Ambitious workflows', glance.ambitiousWorkflows)}</div>${ev(glance.evidenceSessionIds)}</section><section id="what-you-work-on"><h2>What You Work On</h2>${sectionCards(projectAreas, (area) => `<article class="prose-card"><h3>${escapeHtml(area.name)}</h3><p>${escapeHtml(area.description)}</p><strong>${number(area.sessionCount)} sessions</strong>${ev(area.evidenceSessionIds)}</article>`)}</section><section><h2>What You Wanted</h2><div class="two-col"><div class="panel"><div class="panel-title">Goals</div>${barChart('Goal categories', insights.goalCategories)}</div><div class="panel"><div class="panel-title">Top Tools Used</div>${barChart('Top tools', insights.toolCounts)}</div></div></section><section><h2>Languages</h2><div class="two-col"><div class="panel">${barChart('Languages', insights.languages)}</div><div class="panel"><div class="panel-title">Session Types</div>${barChart('Session types', insights.sessionTypes)}</div></div></section><section id="how-you-use"><h2>How You Use Claude Code</h2><article class="panel"><p>${escapeHtml(interaction.narrative ?? 'Interaction analysis unavailable.')}</p><div class="callout"><strong>${escapeHtml(interaction.keyPattern ?? 'No key pattern available.')}</strong></div>${ev(interaction.evidenceSessionIds)}</article></section><section><h2>User Response Time Distribution</h2><div class="panel">${barChart('Response time distribution', responseTimeBuckets(insights.userResponseTimes))}<p class="muted">Median ${coverageNumber(insights.medianResponseTime)}s · Average ${coverageNumber(insights.averageResponseTime)}s</p></div></section><section><h2>Multi-Clauding (Parallel Sessions)</h2><div class="metrics">${[['Overlap pairs', insights.multiClauding?.overlapEvents ?? 0], ['Sessions involved', insights.multiClauding?.sessionsInvolved ?? 0], ['Messages during overlap', insights.multiClauding?.userMessagesDuring ?? 0]].map(([label, value]) => `<article class="metric"><span>${label}</span><strong>${number(value)}</strong></article>`).join('')}</div></section><section><h2>User Messages by Time of Day</h2><div class="two-col"><div class="panel">${timeChart}</div><div class="panel"><div class="panel-title">Tool Errors Encountered</div>${barChart('Tool errors', insights.toolErrorCategories)}</div></div></section><section id="impressive-things"><h2>Impressive Things You Did</h2><p class="muted">${escapeHtml(working.intro ?? '')}</p>${sectionCards(working.impressiveWorkflows, (workflow) => `<article class="prose-card"><h3>${escapeHtml(workflow.title)}</h3><p>${escapeHtml(workflow.description)}</p>${ev(workflow.evidenceSessionIds)}</article>`)}</section><section><h2>What Helped Most</h2><div class="two-col"><div class="panel">${barChart('Helpfulness', insights.helpfulness)}</div><div class="panel"><div class="panel-title">Outcomes</div>${barChart('Outcomes', insights.outcomes, { order: outcomeOrder })}</div></div></section><section id="where-things-go-wrong"><h2>Where Things Go Wrong</h2><p class="muted">${escapeHtml(friction.intro ?? '')}</p>${sectionCards(friction.categories, (category) => `<article class="prose-card"><h3>${escapeHtml(category.category)}</h3><p>${escapeHtml(category.description)}</p>${(category.examples ?? []).map((example) => `<div class="callout">${escapeHtml(example.text)}${ev(example.evidenceSessionIds)}</div>`).join('')}</article>`)}</section><section><h2>Primary Friction Types</h2><div class="two-col"><div class="panel">${barChart('Friction types', insights.friction)}</div><div class="panel"><div class="panel-title">Inferred Satisfaction</div>${barChart('Satisfaction', insights.satisfaction, { order: satisfactionOrder })}</div></div></section><section id="features-to-try"><h2>Existing CC Features to Try</h2><h3>Suggested CLAUDE.md Additions</h3>${sectionCards(suggestions.instructionAdditions, (item) => `<article class="prose-card"><p>${escapeHtml(item.addition)}</p><p class="muted">${escapeHtml(item.why)}</p><div class="copy">${escapeHtml(item.promptScaffold)}</div>${ev(item.evidenceSessionIds)}</article>`)}<h3>Features to Try</h3>${sectionCards(suggestions.featuresToTry, (item) => `<article class="prose-card"><h3>${escapeHtml(item.feature)}</h3><p>${escapeHtml(item.oneLiner)} ${escapeHtml(item.whyForYou)}</p><div class="copy">${escapeHtml(item.exampleCode)}</div>${ev(item.evidenceSessionIds)}</article>`)}</section><section id="new-usage-patterns"><h2>New Ways to Use Claude Code</h2>${sectionCards(suggestions.usagePatterns, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.suggestion)} ${escapeHtml(item.detail)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${ev(item.evidenceSessionIds)}</article>`)}</section><section id="on-the-horizon"><h2>On the Horizon</h2><p class="muted">${escapeHtml(horizon.intro ?? '')}</p>${sectionCards(horizon.opportunities, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.whatsPossible)} ${escapeHtml(item.howToTry)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${ev(item.evidenceSessionIds)}</article>`)}</section><section><h2>${escapeHtml(ending.headline ?? 'A memorable moment')}</h2><article class="panel"><p>${escapeHtml(ending.detail ?? 'No qualitative moment was available.')}</p>${ev(ending.evidenceSessionIds)}</article></section><section><h2>Read coverage</h2><p class="muted">${escapeHtml(projectFilterNote(report))}</p><div class="table-wrap"><table><thead><tr><th>Source</th><th>Coverage</th><th>Found</th><th>Selected</th><th>Limited</th><th>Partial</th><th>Skipped</th><th>Notes</th></tr></thead><tbody>${coverageRows}</tbody></table></div></section>${timezoneScript}</body></html>`;
+  const timeChart = `<label class="timezone">${escapeHtml(t.sections.timezone)} <select id="time-zone"><option value="-8">${escapeHtml(t.timezones.pt)}</option><option value="-5">${escapeHtml(t.timezones.et)}</option><option value="0">${escapeHtml(t.timezones.london)}</option><option value="1">${escapeHtml(t.timezones.cet)}</option><option value="9">${escapeHtml(t.timezones.tokyo)}</option><option value="custom">${escapeHtml(t.timezones.custom)}</option></select></label><div id="time-chart" data-utc-hours="${escapeHtml(utcHours)}">${barChart('Time of day', timeOfDayBuckets(insights.messageHours, t), { t })}</div>`;
+  const tzPrompt = JSON.stringify(t.timezones.prompt);
+  const timezoneScript = `<script>(()=>{const select=document.getElementById('time-zone');const root=document.getElementById('time-chart');if(!select||!root)return;const source=JSON.parse(root.dataset.utcHours||'{}');const rows=[...root.querySelectorAll('.bar-row')];const render=(offset)=>{const counts=[0,0,0,0];for(const [hour,count] of Object.entries(source)){const shifted=(Number(hour)+offset+24)%24;const index=shifted>=6&&shifted<12?0:shifted>=12&&shifted<18?1:shifted>=18?2:3;counts[index]+=Number(count)||0}const maximum=Math.max(1,...counts);rows.forEach((row,index)=>{row.querySelector('strong').textContent=String(counts[index]);row.querySelector('i').style.width=Math.round(counts[index]/maximum*100)+'%'})};const local=-new Date().getTimezoneOffset()/60;const exact=[...select.options].find((option)=>Number(option.value)===local);if(exact)select.value=exact.value;else select.value='custom';render(local);select.addEventListener('change',()=>{let offset=Number(select.value);if(select.value==='custom'){const answer=window.prompt(${tzPrompt},String(local));offset=Number(answer);if(!Number.isFinite(offset)||offset< -12||offset>14){select.value=exact?.value??'custom';offset=local}}render(offset)})})();</script>`;
+  const css = `:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,sans-serif;background:#0d1118;color:#eef3fb;--panel:#151c27;--line:#273449;--muted:#91a0b6;--accent:#78a9ff}*{box-sizing:border-box}body{max-width:1160px;margin:0 auto;padding:48px 24px 80px;background:radial-gradient(circle at 92% 0,#183b68 0,transparent 32rem)}h1{font-size:46px;letter-spacing:-.055em;margin:0 0 8px}h2{margin:46px 0 16px;font-size:22px;letter-spacing:-.02em}h3{font-size:15px;margin:0 0 9px}.muted,.evidence{color:var(--muted)}.evidence{font-size:12px;margin-top:12px}.metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:28px 0}.metric,.panel,.prose-card,.insight-card{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:18px}.metric span{display:block;color:var(--muted);font-size:12px}.metric strong{font-size:25px}.glance,.card-grid,.two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.insight-card p,.prose-card p,.panel p{line-height:1.6;color:#cad4e3;margin:0}.panel-title{font-size:13px;color:var(--muted);margin-bottom:14px}.bar-row{display:grid;grid-template-columns:minmax(90px,1fr) 3fr auto;gap:12px;align-items:center;margin:10px 0;font-size:13px}.bar-track{height:8px;border-radius:99px;background:#243044;overflow:hidden}.bar-track i{display:block;height:100%;background:linear-gradient(90deg,#568ee8,#8fb8ff);border-radius:99px}.empty{padding:18px;color:var(--muted);border:1px dashed var(--line);border-radius:12px}.callout{padding:16px 18px;border-left:3px solid var(--accent);background:#132033;border-radius:0 12px 12px 0;margin:14px 0}.copy{font-family:ui-monospace,monospace;background:#0c121c;border:1px solid var(--line);padding:12px;border-radius:9px;white-space:pre-wrap}.table-wrap{overflow:auto;border-radius:14px}table:not(.sr-only){width:100%;border-collapse:collapse;background:var(--panel)}td,th{padding:11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.status{display:inline-flex;padding:5px 9px;border-radius:99px;background:#172b24;color:#8be0ad;font-size:12px}.status.partial{background:#302817;color:#ffd675}.toc{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0}.toc a,.toc span{color:#bfd6ff;background:#121b29;border:1px solid var(--line);padding:8px 10px;border-radius:9px;font-size:12px;text-decoration:none}.toc span{color:var(--muted)}.timezone{display:flex;gap:10px;align-items:center;color:var(--muted);font-size:12px;margin-bottom:12px}.timezone select{background:#0c121c;color:#eef3fb;border:1px solid var(--line);border-radius:8px;padding:6px}@media(max-width:760px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.glance,.card-grid,.two-col{grid-template-columns:1fr}h1{font-size:36px}}`;
+  return `<!doctype html><html lang="${escapeHtml(htmlLang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(brandTitle)}</title><style>${css}</style></head><body><header><h1>${escapeHtml(brandTitle)}</h1><p class="subtitle">${escapeHtml(subtitle)}</p><p class="muted">${escapeHtml(t.analyzer(report.semantic?.analyzer?.host ?? 'local', report.semantic?.analyzer?.model ?? 'unknown'))}</p><span class="status ${report.parity?.structuralStatus === 'complete' ? '' : 'partial'}">${escapeHtml(report.parity?.structuralStatus ?? 'partial')} parity coverage</span></header>${toc}<section class="metrics">${statCards}</section><section><h2>${escapeHtml(t.sections.atAGlance)}</h2><div class="glance">${proseCard(t.sections.whatsWorking, glance.whatsWorking, t)}${proseCard(t.sections.whatsHindering, glance.whatsHindering, t)}${proseCard(t.sections.quickWins, glance.quickWins, t)}${proseCard(t.sections.ambitiousWorkflows, glance.ambitiousWorkflows, t)}</div>${ev(glance.evidenceSessionIds)}</section><section id="what-you-work-on"><h2>${escapeHtml(t.sections.whatYouWorkOn)}</h2>${sectionCards(projectAreas, (area) => `<article class="prose-card"><h3>${escapeHtml(area.name)}</h3><p>${escapeHtml(area.description)}</p><strong>${escapeHtml(t.sections.sessionsCount(fmt(area.sessionCount)))}</strong>${ev(area.evidenceSessionIds)}</article>`, t)}</section><section><h2>${escapeHtml(t.sections.whatYouWanted)}</h2><div class="two-col"><div class="panel"><div class="panel-title">${escapeHtml(t.sections.goals)}</div>${barChart('Goal categories', insights.goalCategories, { t })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.topTools)}</div>${barChart('Top tools', insights.toolCounts, { t })}</div></div></section><section><h2>${escapeHtml(t.sections.languages)}</h2><div class="two-col"><div class="panel">${barChart('Languages', insights.languages, { t })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.sessionTypes)}</div>${barChart('Session types', insights.sessionTypes, { t })}</div></div></section><section id="how-you-use"><h2>${escapeHtml(t.sections.howYouUse)}</h2><article class="panel"><p>${escapeHtml(interaction.narrative ?? t.sections.interactionUnavailable)}</p><div class="callout"><strong>${escapeHtml(interaction.keyPattern ?? t.sections.noKeyPattern)}</strong></div>${ev(interaction.evidenceSessionIds)}</article></section><section><h2>${escapeHtml(t.sections.responseTime)}</h2><div class="panel">${barChart('Response time distribution', responseTimeBuckets(insights.userResponseTimes), { t })}<p class="muted">${escapeHtml(t.sections.medianAverage(coverageNumber(insights.medianResponseTime), coverageNumber(insights.averageResponseTime)))}</p></div></section><section><h2>${escapeHtml(t.sections.multiClauding)}</h2><div class="metrics">${[[t.sections.overlapPairs, insights.multiClauding?.overlapEvents ?? 0], [t.sections.sessionsInvolved, insights.multiClauding?.sessionsInvolved ?? 0], [t.sections.messagesDuringOverlap, insights.multiClauding?.userMessagesDuring ?? 0]].map(([label, value]) => `<article class="metric"><span>${escapeHtml(label)}</span><strong>${fmt(value)}</strong></article>`).join('')}</div></section><section><h2>${escapeHtml(t.sections.timeOfDay)}</h2><div class="two-col"><div class="panel">${timeChart}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.toolErrors)}</div>${barChart('Tool errors', insights.toolErrorCategories, { t })}</div></div></section><section id="impressive-things"><h2>${escapeHtml(t.sections.impressiveThings)}</h2><p class="muted">${escapeHtml(working.intro ?? '')}</p>${sectionCards(working.impressiveWorkflows, (workflow) => `<article class="prose-card"><h3>${escapeHtml(workflow.title)}</h3><p>${escapeHtml(workflow.description)}</p>${ev(workflow.evidenceSessionIds)}</article>`, t)}</section><section><h2>${escapeHtml(t.sections.whatHelpedMost)}</h2><div class="two-col"><div class="panel">${barChart(t.sections.primarySuccesses, insights.primarySuccesses ?? insights.helpfulness, { t })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.outcomes)}</div>${barChart('Outcomes', insights.outcomes, { order: outcomeOrder, t })}</div></div></section><section id="where-things-go-wrong"><h2>${escapeHtml(t.sections.whereThingsGoWrong)}</h2><p class="muted">${escapeHtml(friction.intro ?? '')}</p>${sectionCards(friction.categories, (category) => `<article class="prose-card"><h3>${escapeHtml(category.category)}</h3><p>${escapeHtml(category.description)}</p>${(category.examples ?? []).map((example) => `<div class="callout">${escapeHtml(example.text)}${ev(example.evidenceSessionIds)}</div>`).join('')}</article>`, t)}</section><section><h2>${escapeHtml(t.sections.primaryFriction)}</h2><div class="two-col"><div class="panel">${barChart(t.sections.frictionTypes, insights.friction, { t })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.inferredSatisfaction)}</div>${barChart('Satisfaction', insights.satisfaction, { order: satisfactionOrder, t })}</div></div></section><section id="features-to-try"><h2>${escapeHtml(t.sections.existingFeatures)}</h2><h3>${escapeHtml(t.sections.claudeMdAdditions)}</h3>${sectionCards(suggestions.instructionAdditions, (item) => `<article class="prose-card"><p>${escapeHtml(item.addition)}</p><p class="muted">${escapeHtml(item.why)}</p><div class="copy">${escapeHtml(item.promptScaffold)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}<h3>${escapeHtml(t.sections.featuresToTry)}</h3>${sectionCards(suggestions.featuresToTry, (item) => `<article class="prose-card"><h3>${escapeHtml(item.feature)}</h3><p>${escapeHtml(item.oneLiner)} ${escapeHtml(item.whyForYou)}</p><div class="copy">${escapeHtml(item.exampleCode)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}</section><section id="new-usage-patterns"><h2>${escapeHtml(t.sections.newWays)}</h2>${sectionCards(suggestions.usagePatterns, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.suggestion)} ${escapeHtml(item.detail)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}</section><section id="on-the-horizon"><h2>${escapeHtml(t.sections.onTheHorizon)}</h2><p class="muted">${escapeHtml(horizon.intro ?? '')}</p>${sectionCards(horizon.opportunities, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.whatsPossible)} ${escapeHtml(item.howToTry)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}</section><section><h2>${escapeHtml(ending.headline ?? t.sections.memorableMoment)}</h2><article class="panel"><p>${escapeHtml(ending.detail ?? t.sections.noQualitativeMoment)}</p>${ev(ending.evidenceSessionIds)}</article></section><section><h2>${escapeHtml(t.sections.readCoverage)}</h2><p class="muted">${escapeHtml(projectFilterNote(report))}</p><div class="table-wrap"><table><thead><tr><th>${escapeHtml(t.sections.source)}</th><th>${escapeHtml(t.sections.coverage)}</th><th>${escapeHtml(t.sections.found)}</th><th>${escapeHtml(t.sections.selected)}</th><th>${escapeHtml(t.sections.limited)}</th><th>${escapeHtml(t.sections.partial)}</th><th>${escapeHtml(t.sections.skipped)}</th><th>${escapeHtml(t.sections.notes)}</th></tr></thead><tbody>${coverageRows}</tbody></table></div></section>${timezoneScript}</body></html>`;
 }
 
 function replaceSection(html, startMarker, endMarker, replacement) {
@@ -303,6 +321,8 @@ function markSemanticSection(html, heading, name) {
 }
 
 export function renderHtml(report) {
+  const chrome = reportChrome(report);
+  const { t } = chrome;
   let html = renderHtmlLegacy(report);
   const structure = report.parity?.structuralStatus ?? 'partial';
   const data = report.parity?.dataStatus ?? 'partial';
@@ -313,24 +333,23 @@ export function renderHtml(report) {
   if (!(report.insights?.multiClauding?.overlapEvents > 0)) {
     html = replaceSection(
       html,
-      '<section><h2>Multi-Clauding (Parallel Sessions)</h2>',
-      '<section><h2>User Messages by Time of Day</h2>',
-      '<section><h2>Multi-Clauding (Parallel Sessions)</h2><div class="empty">No parallel session usage was detected; you typically work with one session at a time.</div></section>'
+      `<section><h2>${escapeHtml(t.sections.multiClauding)}</h2>`,
+      `<section><h2>${escapeHtml(t.sections.timeOfDay)}</h2>`,
+      `<section><h2>${escapeHtml(t.sections.multiClauding)}</h2><div class="empty">${escapeHtml(t.sections.noParallel)}</div></section>`
     );
   }
-  const helped = `<section><h2>What Helped Most (Claude's Capabilities)</h2><div class="two-col"><div class="panel">${barChart('Primary successes', report.insights?.primarySuccesses)}</div><div class="panel"><div class="panel-title">Outcomes</div>${barChart('Outcomes', report.insights?.outcomes, { order: ['not_achieved', 'partially_achieved', 'mostly_achieved', 'fully_achieved', 'unclear_from_transcript'] })}</div></div></section>`;
-  html = replaceSection(html, '<section><h2>What Helped Most</h2>', '<section id="where-things-go-wrong">', helped);
+  // Legacy placeholder heading was already localized to whatHelpedMost in renderHtmlLegacy.
   const evidenceRows = (report.semantic?.sessions ?? []).map((session) => `<tr><td>${escapeHtml(session.sessionId ?? session.id)}</td><td>${escapeHtml(session.source)}</td><td>${escapeHtml(session.date ?? 'unknown')}</td><td>${escapeHtml(session.projectPath || session.projectLabel || '—')}</td></tr>`).join('');
-  const evidenceIndex = `<section><h2>Evidence index</h2><div class="table-wrap"><table><thead><tr><th>Session</th><th>Agent</th><th>Date</th><th>Project</th></tr></thead><tbody>${evidenceRows || '<tr><td colspan="4">No semantic evidence sessions.</td></tr>'}</tbody></table></div>${renderEvidenceQuotations(report)}</section>`;
-  const userAuditHtml = renderUserAudit(report);
-  html = html.replace('<section><h2>Read coverage</h2>', `${userAuditHtml}${evidenceIndex}<section><h2>Read coverage</h2><p class="muted">${escapeHtml(semanticFailureNote(report))}</p>`);
+  const evidenceIndex = `<section><h2>${escapeHtml(t.sections.evidenceIndex)}</h2><div class="table-wrap"><table><thead><tr><th>${escapeHtml(t.sections.session)}</th><th>${escapeHtml(t.sections.agent)}</th><th>${escapeHtml(t.sections.date)}</th><th>${escapeHtml(t.sections.project)}</th></tr></thead><tbody>${evidenceRows || `<tr><td colspan="4">${escapeHtml(t.sections.noEvidenceSessions)}</td></tr>`}</tbody></table></div>${renderEvidenceQuotations(report)}</section>`;
+  const userAuditHtml = renderUserAudit(report, t);
+  html = html.replace(`<section><h2>${escapeHtml(t.sections.readCoverage)}</h2>`, `${userAuditHtml}${evidenceIndex}<section><h2>${escapeHtml(t.sections.readCoverage)}</h2><p class="muted">${escapeHtml(semanticFailureNote(report))}</p>`);
   const headerClose = html.indexOf('</header>');
   const headerEnd = headerClose < 0 ? -1 : headerClose + '</header>'.length;
   const tocStart = html.indexOf('<nav class="toc"', headerEnd);
   const tocEnd = html.indexOf('</nav>', tocStart) + '</nav>'.length;
   const metricsStart = html.indexOf('<section class="metrics">', tocEnd);
   const metricsEnd = html.indexOf('</section>', metricsStart) + '</section>'.length;
-  const glanceStart = html.indexOf('<section><h2>At a Glance</h2>', metricsEnd);
+  const glanceStart = html.indexOf(`<section><h2>${escapeHtml(t.sections.atAGlance)}</h2>`, metricsEnd);
   const nextSection = html.indexOf('<section id="what-you-work-on">', glanceStart);
   if ([headerEnd, tocStart, tocEnd, metricsStart, metricsEnd, glanceStart, nextSection].some((index) => index < 0)) {
     throw new Error('The parity report layout could not be assembled.');
@@ -339,21 +358,22 @@ export function renderHtml(report) {
 
   const sections = report.semantic?.sections ?? {};
   const semanticContracts = [
-    ['At a Glance', 'at_a_glance', Boolean(sections.at_a_glance)],
-    ['What You Work On', 'project_areas', Array.isArray(sections.project_areas?.areas)],
-    ['How You Use Claude Code', 'interaction_style', Boolean(sections.interaction_style)],
-    ['Impressive Things You Did', 'what_works', Array.isArray(sections.what_works?.impressiveWorkflows)],
-    ['Where Things Go Wrong', 'friction_analysis', Array.isArray(sections.friction_analysis?.categories)],
-    ['Existing CC Features to Try', 'suggestions', Array.isArray(sections.suggestions?.instructionAdditions) || Array.isArray(sections.suggestions?.featuresToTry)],
-    ['New Ways to Use Claude Code', 'suggestions', Array.isArray(sections.suggestions?.usagePatterns)],
-    ['On the Horizon', 'on_the_horizon', Array.isArray(sections.on_the_horizon?.opportunities)],
-    [sections.fun_ending?.headline ?? 'A memorable moment', 'fun_ending', Boolean(sections.fun_ending)]
+    [t.sections.atAGlance, 'at_a_glance', Boolean(sections.at_a_glance)],
+    [t.sections.whatYouWorkOn, 'project_areas', Array.isArray(sections.project_areas?.areas)],
+    [t.sections.howYouUse, 'interaction_style', Boolean(sections.interaction_style)],
+    [t.sections.impressiveThings, 'what_works', Array.isArray(sections.what_works?.impressiveWorkflows)],
+    [t.sections.whereThingsGoWrong, 'friction_analysis', Array.isArray(sections.friction_analysis?.categories)],
+    [t.sections.existingFeatures, 'suggestions', Array.isArray(sections.suggestions?.instructionAdditions) || Array.isArray(sections.suggestions?.featuresToTry)],
+    [t.sections.newWays, 'suggestions', Array.isArray(sections.suggestions?.usagePatterns)],
+    [t.sections.onTheHorizon, 'on_the_horizon', Array.isArray(sections.on_the_horizon?.opportunities)],
+    [sections.fun_ending?.headline ?? t.sections.memorableMoment, 'fun_ending', Boolean(sections.fun_ending)]
   ];
   for (const [heading, name, available] of semanticContracts) {
     html = available ? markSemanticSection(html, heading, name) : removeSectionByHeading(html, heading);
   }
   return html;
 }
+
 
 export async function writeReport(report, outputDirectory) {
   await mkdir(outputDirectory, { recursive: true, mode: 0o700 });

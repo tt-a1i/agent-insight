@@ -13,6 +13,8 @@ The project has two goals:
 
 The shared command is `/agent-insights`. Codex exposes the same workflow as `$agent-insights`. Agent Insight does not replace Claude Code's built-in `/insights` command.
 
+**Default report language is Simplified Chinese** (`--locale zh`): HTML chrome (section titles, empty states, audit headings) and model-generated prose. The product title stays English `Agent Insight`. Pass `--locale en` for English chrome and prose. On Claude host, the HTML shell remains English `Claude Code Insights` for 2.1.206 parity regardless of locale; use `--locale en` when you also want English model prose.
+
 > The exact baseline and every intentional extension are defined in the [Claude Code 2.1.206 parity contract](docs/parity/claude-2.1.206.md).
 
 ## Why Agent Insight

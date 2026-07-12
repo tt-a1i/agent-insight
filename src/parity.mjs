@@ -161,6 +161,9 @@ function expectedSubtitle(candidate) {
 }
 
 function htmlContractFailures(html, candidate) {
+  // Skip Claude 1:1 HTML chrome when the candidate was analyzed on a non-Claude host.
+  const host = candidate?.semantic?.analyzer?.host;
+  if (host && host !== 'claude') return [];
   const document = parseHtmlDom(html);
   if (document.error) return [`html.dom:${document.error}`];
   const failures = [];

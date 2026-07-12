@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 import { AGGREGATE_TASKS } from './aggregate-protocol.mjs';
+import { normalizeLocale } from './i18n.mjs';
 
 const dateOnly = (value) => value ? value.slice(0, 10) : null;
 const number = (value) => new Intl.NumberFormat('en-US').format(value);
@@ -251,7 +252,7 @@ function buildRecommendations(totals, projects, sourceCount) {
   return recommendations.slice(0, 3);
 }
 
-export function summarizeSessions(sessions, { days = 30, requestedRange = null, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 }, semantic = null, extensions = null, eligibility = null } = {}) {
+export function summarizeSessions(sessions, { days = 30, requestedRange = null, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 }, semantic = null, extensions = null, eligibility = null, locale = null } = {}) {
   const ordered = [...sessions].sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
   const sourceMap = {};
   const projects = {};
@@ -303,6 +304,7 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
+    locale: normalizeLocale(locale),
     privacy: {
       rawTranscriptRetained: false,
       rawTranscriptWritten: false,

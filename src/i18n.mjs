@@ -1,0 +1,312 @@
+/** Report chrome locale and branding helpers. Default product locale is zh. */
+
+export const DEFAULT_LOCALE = 'zh';
+
+const EN_CLAUDE = {
+  brandTitle: 'Claude Code Insights',
+  htmlLang: 'en',
+  numberLocale: 'en-US',
+  subtitle: (messages, sessions, discoveredSuffix, range) => `${messages} messages across ${sessions} sessions${discoveredSuffix} | ${range}`,
+  noEligibleSessions: 'No eligible sessions',
+  analyzer: (host, model) => `Analyzer ${host} / ${model}`,
+  metrics: {
+    Messages: 'Messages',
+    Lines: 'Lines',
+    Files: 'Files',
+    Days: 'Days',
+    'Msgs/Day': 'Msgs/Day'
+  },
+  tocAria: 'Report sections',
+  toc: {
+    whatYouWorkOn: 'What You Work On',
+    howYouUse: 'How You Use CC',
+    impressiveThings: 'Impressive Things',
+    whereThingsGoWrong: 'Where Things Go Wrong',
+    featuresToTry: 'Features to Try',
+    newUsagePatterns: 'New Usage Patterns',
+    onTheHorizon: 'On the Horizon',
+    teamFeedback: 'Team Feedback'
+  },
+  sections: {
+    atAGlance: 'At a Glance',
+    whatsWorking: "What's working",
+    whatsHindering: "What's hindering you",
+    quickWins: 'Quick wins to try',
+    ambitiousWorkflows: 'Ambitious workflows',
+    whatYouWorkOn: 'What You Work On',
+    whatYouWanted: 'What You Wanted',
+    goals: 'Goals',
+    topTools: 'Top Tools Used',
+    languages: 'Languages',
+    sessionTypes: 'Session Types',
+    howYouUse: 'How You Use Claude Code',
+    interactionUnavailable: 'Interaction analysis unavailable.',
+    noKeyPattern: 'No key pattern available.',
+    responseTime: 'User Response Time Distribution',
+    medianAverage: (median, average) => `Median ${median}s · Average ${average}s`,
+    multiClauding: 'Multi-Clauding (Parallel Sessions)',
+    overlapPairs: 'Overlap pairs',
+    sessionsInvolved: 'Sessions involved',
+    messagesDuringOverlap: 'Messages during overlap',
+    noParallel: 'No parallel session usage was detected; you typically work with one session at a time.',
+    timeOfDay: 'User Messages by Time of Day',
+    timezone: 'Timezone',
+    toolErrors: 'Tool Errors Encountered',
+    impressiveThings: 'Impressive Things You Did',
+    whatHelpedMost: "What Helped Most (Claude's Capabilities)",
+    primarySuccesses: 'Primary successes',
+    outcomes: 'Outcomes',
+    whereThingsGoWrong: 'Where Things Go Wrong',
+    primaryFriction: 'Primary Friction Types',
+    frictionTypes: 'Friction types',
+    inferredSatisfaction: 'Inferred Satisfaction',
+    existingFeatures: 'Existing CC Features to Try',
+    claudeMdAdditions: 'Suggested CLAUDE.md Additions',
+    featuresToTry: 'Features to Try',
+    newWays: 'New Ways to Use Claude Code',
+    onTheHorizon: 'On the Horizon',
+    memorableMoment: 'A memorable moment',
+    noQualitativeMoment: 'No qualitative moment was available.',
+    evidenceIndex: 'Evidence index',
+    session: 'Session',
+    agent: 'Agent',
+    date: 'Date',
+    project: 'Project',
+    noEvidenceSessions: 'No semantic evidence sessions.',
+    readCoverage: 'Read coverage',
+    source: 'Source',
+    coverage: 'Coverage',
+    found: 'Found',
+    selected: 'Selected',
+    limited: 'Limited',
+    partial: 'Partial',
+    skipped: 'Skipped',
+    notes: 'Notes',
+    noSourceProbes: 'No source probes ran.',
+    analysisUnavailable: 'Analysis unavailable.',
+    sectionUnavailable: 'This section is unavailable for the current coverage.',
+    sessionsCount: (n) => `${n} sessions`,
+    morning: 'Morning',
+    afternoon: 'Afternoon',
+    evening: 'Evening',
+    night: 'Night',
+    noData: 'No data',
+    noResponseTimeData: 'No response time data',
+    noTimeData: 'No time data',
+    noToolErrors: 'No tool errors'
+  },
+  audit: {
+    threeHardTruths: 'Three hard truths',
+    threeHardTruthsLead: 'The highest-impact habits worth confronting first.',
+    incomplete: (reason) => `User audit extension coverage is incomplete (${reason}). Baseline Claude sections above remain available.`,
+    allFindings: 'All findings',
+    allFindingsLead: 'Every remaining distinct issue, severity-ordered.',
+    selfDefeating: 'Habits that undercut you',
+    selfDefeatingLead: 'Recurring self-defeating phrases and patterns, deduplicated by intent.',
+    strengths: 'Habits worth keeping',
+    strengthsLead: 'Effective interaction habits that should survive the roast.',
+    automation: 'Automation candidates',
+    automationLead: 'Advisory only. Report generation never writes Skills, commands, templates, or host config.',
+    leverage: 'One highest-leverage change',
+    leverageLead: 'One move. No streaks, no trackers, no longitudinal homework.',
+    betterAlternative: 'Better alternative:',
+    intent: 'Intent:',
+    trigger: 'Trigger:',
+    inputs: 'Inputs:',
+    outputs: 'Outputs:',
+    overAutomationRisk: 'Over-automation risk:',
+    seenAbout: (n) => `Seen about ${n} time${n === 1 ? '' : 's'}.`,
+    evidence: 'Evidence:',
+    unavailable: 'unavailable'
+  },
+  timezones: {
+    pt: 'PT (UTC-8)',
+    et: 'ET (UTC-5)',
+    london: 'London (UTC)',
+    cet: 'CET (UTC+1)',
+    tokyo: 'Tokyo (UTC+9)',
+    custom: 'Local / custom UTC offset',
+    prompt: 'UTC offset in hours'
+  }
+};
+
+const EN_AGENT = {
+  ...EN_CLAUDE,
+  brandTitle: 'Agent Insight',
+  sections: {
+    ...EN_CLAUDE.sections,
+    howYouUse: 'How You Use Agents',
+    whatHelpedMost: 'What Helped Most',
+    multiClauding: 'Parallel Sessions',
+    existingFeatures: 'Features to Try',
+    claudeMdAdditions: 'Suggested project-instruction additions',
+    newWays: 'New Ways to Use Agents'
+  },
+  audit: {
+    ...EN_CLAUDE.audit,
+    incomplete: (reason) => `User audit extension coverage is incomplete (${reason}). Baseline sections above remain available.`
+  },
+  toc: {
+    ...EN_CLAUDE.toc,
+    howYouUse: 'How You Use Agents'
+  }
+};
+
+const ZH = {
+  brandTitle: 'Agent Insight',
+  htmlLang: 'zh-CN',
+  numberLocale: 'zh-CN',
+  subtitle: (messages, sessions, discoveredSuffix, range) => `${messages} 条消息 · ${sessions} 个会话${discoveredSuffix} | ${range}`,
+  noEligibleSessions: '没有合格会话',
+  analyzer: (host, model) => `分析器 ${host} / ${model}`,
+  metrics: {
+    Messages: '消息',
+    Lines: '代码行',
+    Files: '文件',
+    Days: '天数',
+    'Msgs/Day': '消息/天'
+  },
+  tocAria: '报告章节',
+  toc: {
+    whatYouWorkOn: '你在做什么',
+    howYouUse: '使用方式',
+    impressiveThings: '亮点工作流',
+    whereThingsGoWrong: '问题出在哪',
+    featuresToTry: '可尝试的能力',
+    newUsagePatterns: '新用法',
+    onTheHorizon: '展望',
+    teamFeedback: '团队反馈'
+  },
+  sections: {
+    atAGlance: '一瞥',
+    whatsWorking: '进展顺利的地方',
+    whatsHindering: '拖后腿的地方',
+    quickWins: '可马上做的改进',
+    ambitiousWorkflows: '更大胆的工作流',
+    whatYouWorkOn: '你在做什么',
+    whatYouWanted: '你想完成什么',
+    goals: '目标',
+    topTools: '常用工具',
+    languages: '语言',
+    sessionTypes: '会话类型',
+    howYouUse: '你如何使用 Agent',
+    interactionUnavailable: '暂无交互风格分析。',
+    noKeyPattern: '暂无关键模式。',
+    responseTime: '用户响应时间分布',
+    medianAverage: (median, average) => `中位数 ${median}s · 平均 ${average}s`,
+    multiClauding: '并行会话',
+    overlapPairs: '重叠对数',
+    sessionsInvolved: '涉及会话',
+    messagesDuringOverlap: '重叠期间消息',
+    noParallel: '未检测到并行会话；你通常一次只开一个会话。',
+    timeOfDay: '一天中的消息时段',
+    timezone: '时区',
+    toolErrors: '遇到的工具错误',
+    impressiveThings: '你做过的亮点',
+    whatHelpedMost: '最有帮助的能力',
+    primarySuccesses: '主要成功类型',
+    outcomes: '结果',
+    whereThingsGoWrong: '问题出在哪',
+    primaryFriction: '主要摩擦类型',
+    frictionTypes: '摩擦类型',
+    inferredSatisfaction: '推断满意度',
+    existingFeatures: '可尝试的能力',
+    claudeMdAdditions: '建议写入的项目说明',
+    featuresToTry: '可尝试的能力',
+    newWays: '新的使用方式',
+    onTheHorizon: '展望',
+    memorableMoment: '一个难忘瞬间',
+    noQualitativeMoment: '暂无定性亮点。',
+    evidenceIndex: '证据索引',
+    session: '会话',
+    agent: 'Agent',
+    date: '日期',
+    project: '项目',
+    noEvidenceSessions: '没有语义证据会话。',
+    readCoverage: '读取覆盖',
+    source: '来源',
+    coverage: '覆盖',
+    found: '发现',
+    selected: '选用',
+    limited: '截断',
+    partial: '部分',
+    skipped: '跳过',
+    notes: '备注',
+    noSourceProbes: '未执行来源探测。',
+    analysisUnavailable: '分析不可用。',
+    sectionUnavailable: '当前覆盖下此章节不可用。',
+    sessionsCount: (n) => `${n} 个会话`,
+    morning: '上午',
+    afternoon: '下午',
+    evening: '晚上',
+    night: '凌晨',
+    noData: '暂无数据',
+    noResponseTimeData: '暂无响应时间数据',
+    noTimeData: '暂无时段数据',
+    noToolErrors: '没有工具错误'
+  },
+  audit: {
+    threeHardTruths: '三条硬事实',
+    threeHardTruthsLead: '最先该正视的高影响交互习惯。',
+    incomplete: (reason) => `用户审计扩展不完整（${reason}）。上方基线章节仍可用。`,
+    allFindings: '全部发现',
+    allFindingsLead: '其余互不相同的问题，按严重度排序。',
+    selfDefeating: '会拆台的习惯',
+    selfDefeatingLead: '反复出现的自我拆台说法与模式，按意图去重。',
+    strengths: '值得保留的习惯',
+    strengthsLead: '经得起吐槽、仍应留下的有效交互习惯。',
+    automation: '可自动化候选',
+    automationLead: '仅供参考。生成报告不会写入 Skill、命令、模板或宿主配置。',
+    leverage: '一个最高杠杆改动',
+    leverageLead: '只改一件事。没有连续打卡、追踪器或长期作业。',
+    betterAlternative: '更好的做法：',
+    intent: '意图：',
+    trigger: '触发：',
+    inputs: '输入：',
+    outputs: '输出：',
+    overAutomationRisk: '过度自动化风险：',
+    seenAbout: (n) => `大约出现 ${n} 次。`,
+    evidence: '证据：',
+    unavailable: '不可用'
+  },
+  timezones: {
+    pt: 'PT (UTC-8)',
+    et: 'ET (UTC-5)',
+    london: 'London (UTC)',
+    cet: 'CET (UTC+1)',
+    tokyo: 'Tokyo (UTC+9)',
+    custom: '本地 / 自定义 UTC 偏移',
+    prompt: 'UTC 偏移（小时）'
+  }
+};
+
+export function normalizeLocale(value) {
+  if (value === undefined || value === null || value === '') return DEFAULT_LOCALE;
+  const locale = String(value).trim().toLowerCase().replace('_', '-');
+  if (locale === 'zh' || locale === 'zh-cn' || locale.startsWith('zh-')) return 'zh';
+  if (locale === 'en' || locale === 'en-us' || locale.startsWith('en-')) return 'en';
+  throw new Error('--locale must be zh or en.');
+}
+
+export function useClaudeParityChrome(report) {
+  return report?.semantic?.analyzer?.host === 'claude'
+    || report?.parityProfile === 'claude-2.1.206';
+}
+
+export function reportChrome(report) {
+  if (useClaudeParityChrome(report)) {
+    return { brandTitle: EN_CLAUDE.brandTitle, locale: 'en', htmlLang: 'en', t: EN_CLAUDE, claudeParity: true };
+  }
+  const locale = normalizeLocale(report?.locale);
+  const t = locale === 'zh' ? ZH : EN_AGENT;
+  return { brandTitle: t.brandTitle, locale, htmlLang: t.htmlLang, t, claudeParity: false };
+}
+
+export function proseLocaleInstruction(locale) {
+  if (normalizeLocale(locale) !== 'zh') return '';
+  return '\nWrite all human-readable prose values in Simplified Chinese. Keep JSON keys and taxonomy enum values unchanged.';
+}
+
+export function appendProseLocale(prompt, locale) {
+  return `${prompt}${proseLocaleInstruction(locale)}`;
+}

@@ -189,7 +189,9 @@ test('partial source coverage plus incomplete audit still yields a usable Claude
 });
 
 test('HTML omits missing semantic sections while retaining deterministic charts and the fixed TOC', () => {
-  const html = renderHtml(summarizeSessions([session()]));
+  const html = renderHtml(summarizeSessions([session()], {
+    semantic: { analyzer: { host: 'claude', model: 'current' }, sessions: [], sections: {} }
+  }));
 
   for (const semanticHeading of [
     'At a Glance', 'What You Work On', 'How You Use Claude Code', 'Impressive Things You Did',
@@ -207,4 +209,31 @@ test('HTML omits missing semantic sections while retaining deterministic charts 
   }
   assert.match(html, /<nav class="toc"/);
   assert.match(html, />Team Feedback<\/span>/);
+});
+
+test('non-Claude default locale uses Agent Insight brand and Chinese chrome', () => {
+  const report = summarizeSessions([{
+    ...session(),
+    id: 'cursor-a',
+    source: 'cursor'
+  }], {
+    locale: 'zh',
+    semantic: {
+      analyzer: { host: 'cursor', model: 'composer' },
+      sessions: [],
+      sections: {
+        interaction_style: { narrative: '短验证循环。', keyPattern: '先写验收。', evidenceSessionIds: [] }
+      }
+    }
+  });
+  assert.equal(report.locale, 'zh');
+  const html = renderHtml(report);
+  assert.match(html, /<html lang="zh-CN">/);
+  assert.match(html, /<title>Agent Insight<\/title>/);
+  assert.match(html, /<h1>Agent Insight<\/h1>/);
+  assert.doesNotMatch(html, /Claude Code Insights/);
+  assert.match(html, /<h2>你如何使用 Agent<\/h2>/);
+  assert.match(html, /<h2>并行会话<\/h2>/);
+  assert.match(html, /<h2>最有帮助的能力<\/h2>/);
+  assert.match(html, /可尝试的能力/);
 });
