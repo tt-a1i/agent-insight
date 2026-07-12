@@ -228,7 +228,17 @@ function htmlContractFailures(html, candidate) {
     [],
     ['Evidence index', 'Read coverage'],
     ['Three hard truths', 'Evidence index', 'Read coverage'],
-    ['Three hard truths', 'All findings', 'Evidence index', 'Read coverage']
+    ['Three hard truths', 'All findings', 'Evidence index', 'Read coverage'],
+    [
+      'Three hard truths',
+      'All findings',
+      'Habits that undercut you',
+      'Habits worth keeping',
+      'Automation candidates',
+      'One highest-leverage change',
+      'Evidence index',
+      'Read coverage'
+    ]
   ];
   if (!transparentTails.some((tail) => isDeepStrictEqual(actualHeadings, [...expectedHeadings, ...tail]))) {
     failures.push('html.headings');

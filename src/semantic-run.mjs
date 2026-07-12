@@ -162,16 +162,20 @@ function ensureUserAuditExtension(run) {
 
 function auditAggregateContext(run) {
   return {
-    sessions: auditEligibleSessions(run).map((session) => ({
-      id: session.id,
-      sessionId: session.sessionId ?? session.id,
-      source: session.source,
-      date: session.date,
-      projectPath: session.projectPath ?? null,
-      projectLabel: session.projectLabel ?? null,
-      facet: session.facet,
-      findings: run.extensions?.userAudit?.sessions?.[session.id]?.findings ?? []
-    }))
+    sessions: auditEligibleSessions(run).map((session) => {
+      const audit = run.extensions?.userAudit?.sessions?.[session.id];
+      return {
+        id: session.id,
+        sessionId: session.sessionId ?? session.id,
+        source: session.source,
+        date: session.date,
+        projectPath: session.projectPath ?? null,
+        projectLabel: session.projectLabel ?? null,
+        facet: session.facet,
+        userTexts: audit?.userTexts ?? [],
+        findings: audit?.findings ?? []
+      };
+    })
   };
 }
 

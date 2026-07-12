@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -108,7 +108,34 @@ function auditAggregateResult(sessionId) {
         root_cause: 'implied goals'
       }
     ],
-    remaining: []
+    remaining: [],
+    strengths: [{
+      habit: 'You harden the win with a regression ask.',
+      explanation: 'After the first repair, you demand an edge-case test instead of declaring victory.',
+      quotations: ['Add a regression test for the parser edge case.'],
+      locators: [{ session_id: sessionId, message_indexes: [9] }]
+    }],
+    self_defeating_patterns: [{
+      pattern: 'Fix it, then remember the test',
+      intent: 'implementation before acceptance criteria',
+      explanation: 'Acceptance arrives as a sequel instead of the opening line.',
+      quotations: ['Fix the broken parser'],
+      locators: [{ session_id: sessionId, message_indexes: [1] }]
+    }],
+    highest_leverage_change: {
+      change: 'Lead with the failing case and the green bar that proves it.',
+      rationale: 'One acceptance sentence collapses the patch-first habit without inventing a tracker.'
+    },
+    automation_candidates: [{
+      name: 'parser-regression-gate',
+      type: 'Skill',
+      trigger: 'When asking to fix a parser failure',
+      frequency: 'Repeated repair-then-test sessions',
+      inputs: ['failing behavior', 'edge case'],
+      outputs: ['fix plus regression test'],
+      rationale: 'The repair followed by an explicit regression ask is a multi-step workflow worth packaging.',
+      over_automation_risk: 'A canned skill could skip genuine diagnosis when the failure is novel.'
+    }]
   };
 }
 
@@ -170,6 +197,10 @@ test('a semantic run progresses through every section and finalizes a timestampe
   assert.equal(final.report.parity.structuralStatus, 'complete');
   assert.equal(final.report.extensions.userAudit.status, 'complete');
   assert.equal(final.report.extensions.userAudit.aggregate.topThree.length, 3);
+  assert.equal(final.report.extensions.userAudit.aggregate.strengths.length, 1);
+  assert.equal(final.report.extensions.userAudit.aggregate.selfDefeatingPatterns.length, 1);
+  assert.match(final.report.extensions.userAudit.aggregate.highestLeverageChange.change, /failing case/);
+  assert.equal(final.report.extensions.userAudit.aggregate.automationCandidates[0].type, 'Skill');
   assert.deepEqual(final.report.coverage.eligibility, { scanned: 1, eligible: 1, excluded: 0, reasons: {} });
   assert.match(final.files.timestampedHtml, /report-\d{4}-\d{2}-\d{2}-\d{6}\.html$/);
   const html = await readFile(final.files.timestampedHtml, 'utf8');
@@ -179,14 +210,34 @@ test('a semantic run progresses through every section and finalizes a timestampe
   assert.match(html, /Fix the broken parser/);
   assert.match(html, /Three hard truths/);
   assert.match(html, /All findings/);
+  assert.match(html, /Habits that undercut you/);
+  assert.match(html, /Habits worth keeping/);
+  assert.match(html, /Automation candidates/);
+  assert.match(html, /One highest-leverage change/);
   assert.match(html, /You patch first and define done later/);
+  assert.match(html, /parser-regression-gate/);
   assert.match(html, /claude-parity/);
   assert.match(html, /\/work\/parity/);
   assert.match(final.report.privacy.note, /representative user quotations/);
   assert.equal(final.report.semantic.sessions[0].sessionId, 'claude-parity');
   assert.equal(final.report.semantic.sessions[0].projectPath, '/work/parity');
   assert.ok(html.indexOf('Three hard truths') > html.indexOf('The parser blinked first'));
-  assert.ok(html.indexOf('Evidence index') > html.indexOf('All findings'));
+  assert.ok(html.indexOf('Habits that undercut you') > html.indexOf('All findings'));
+  assert.ok(html.indexOf('One highest-leverage change') > html.indexOf('Automation candidates'));
+  assert.ok(html.indexOf('Evidence index') > html.indexOf('One highest-leverage change'));
+  const outputNames = await readdir(join(home, 'usage-data'));
+  assert.deepEqual(outputNames.sort(), [
+    'agent-prompt.md',
+    final.files.timestampedHtml.split('/').at(-1),
+    'report.html',
+    'report.json',
+    'report.md'
+  ].sort());
+  assert.equal(outputNames.some((name) => /skill|command|template|automation|hooks/i.test(name)), false);
+  const homeNames = await readdir(home);
+  assert.equal(homeNames.includes('.claude'), false);
+  assert.equal(homeNames.includes('.agents'), false);
+  assert.equal(homeNames.includes('.cursor'), false);
 });
 
 test('audit task failure still finalizes the Claude baseline with explicit incomplete extension coverage', async () => {

@@ -68,6 +68,34 @@ function renderFindingCard(finding, evidenceSessions = []) {
   return `<article class="prose-card audit-finding" data-severity="${escapeHtml(finding.severity)}" data-posture="${escapeHtml(finding.evidencePosture)}"><p class="muted">${escapeHtml(finding.category)} · ${escapeHtml(finding.severity)} · ${escapeHtml(finding.evidencePosture.replaceAll('_', ' '))}</p><h3>${escapeHtml(finding.accusation)}</h3><p>${escapeHtml(finding.explanation)}</p>${quotes}<p><strong>Better alternative:</strong> ${escapeHtml(finding.betterAlternative)}</p>${count}<p class="evidence">Evidence: ${escapeHtml(locators || 'unavailable')}</p></article>`;
 }
 
+function renderStrengthCard(item, evidenceSessions = []) {
+  const quotes = (item.quotations ?? []).map((quotation) => `<blockquote>${escapeHtml(quotation)}</blockquote>`).join('');
+  const locators = (item.locators ?? []).map((locator) => {
+    const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
+    const label = session
+      ? [session.sessionId ?? session.id, session.source, session.date, session.projectPath || session.projectLabel].filter(Boolean).join(' · ')
+      : locator.sessionId;
+    return `${label} · messages ${locator.messageIndexes.join(', ')}`;
+  }).join('; ');
+  return `<article class="prose-card"><h3>${escapeHtml(item.habit)}</h3><p>${escapeHtml(item.explanation)}</p>${quotes}${locators ? `<p class="evidence">Evidence: ${escapeHtml(locators)}</p>` : ''}</article>`;
+}
+
+function renderSelfDefeatingCard(item, evidenceSessions = []) {
+  const quotes = (item.quotations ?? []).map((quotation) => `<blockquote>${escapeHtml(quotation)}</blockquote>`).join('');
+  const locators = (item.locators ?? []).map((locator) => {
+    const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
+    const label = session
+      ? [session.sessionId ?? session.id, session.source, session.date, session.projectPath || session.projectLabel].filter(Boolean).join(' · ')
+      : locator.sessionId;
+    return `${label} · messages ${locator.messageIndexes.join(', ')}`;
+  }).join('; ');
+  return `<article class="prose-card"><h3>${escapeHtml(item.pattern)}</h3><p class="muted">Intent: ${escapeHtml(item.intent)}</p><p>${escapeHtml(item.explanation)}</p>${quotes}<p class="evidence">Evidence: ${escapeHtml(locators || 'unavailable')}</p></article>`;
+}
+
+function renderAutomationCard(item) {
+  return `<article class="prose-card"><p class="muted">${escapeHtml(item.type)} · ${escapeHtml(item.frequency)}</p><h3>${escapeHtml(item.name)}</h3><p><strong>Trigger:</strong> ${escapeHtml(item.trigger)}</p><p><strong>Inputs:</strong> ${escapeHtml((item.inputs ?? []).join('; '))}</p><p><strong>Outputs:</strong> ${escapeHtml((item.outputs ?? []).join('; '))}</p><p>${escapeHtml(item.rationale)}</p><p class="muted"><strong>Over-automation risk:</strong> ${escapeHtml(item.overAutomationRisk)}</p></article>`;
+}
+
 function renderUserAudit(report) {
   const audit = report.extensions?.userAudit;
   if (!audit || audit.status === 'skipped') return '';
@@ -79,7 +107,21 @@ function renderUserAudit(report) {
   if (audit.status !== 'complete' || !audit.aggregate) return '';
   const top = audit.aggregate.topThree ?? [];
   const remaining = audit.aggregate.remaining ?? [];
-  return `<section data-extension-section="user_audit"><h2>Three hard truths</h2><p class="muted">The highest-impact habits worth confronting first.</p>${sectionCards(top, (finding) => renderFindingCard(finding, evidenceSessions))}</section><section data-extension-section="user_audit_all"><h2>All findings</h2><p class="muted">Every remaining distinct issue, severity-ordered.</p>${sectionCards(remaining, (finding) => renderFindingCard(finding, evidenceSessions))}</section>`;
+  const patterns = audit.aggregate.selfDefeatingPatterns ?? [];
+  const strengths = audit.aggregate.strengths ?? [];
+  const automation = audit.aggregate.automationCandidates ?? [];
+  const leverage = audit.aggregate.highestLeverageChange;
+  const leverageHtml = leverage
+    ? `<section data-extension-section="user_audit_leverage"><h2>One highest-leverage change</h2><p class="muted">One move. No streaks, no trackers, no longitudinal homework.</p><article class="prose-card"><h3>${escapeHtml(leverage.change)}</h3><p>${escapeHtml(leverage.rationale)}</p></article></section>`
+    : '';
+  return [
+    `<section data-extension-section="user_audit"><h2>Three hard truths</h2><p class="muted">The highest-impact habits worth confronting first.</p>${sectionCards(top, (finding) => renderFindingCard(finding, evidenceSessions))}</section>`,
+    `<section data-extension-section="user_audit_all"><h2>All findings</h2><p class="muted">Every remaining distinct issue, severity-ordered.</p>${sectionCards(remaining, (finding) => renderFindingCard(finding, evidenceSessions))}</section>`,
+    `<section data-extension-section="user_audit_self_defeating"><h2>Habits that undercut you</h2><p class="muted">Recurring self-defeating phrases and patterns, deduplicated by intent.</p>${sectionCards(patterns, (item) => renderSelfDefeatingCard(item, evidenceSessions))}</section>`,
+    `<section data-extension-section="user_audit_strengths"><h2>Habits worth keeping</h2><p class="muted">Effective interaction habits that should survive the roast.</p>${sectionCards(strengths, (item) => renderStrengthCard(item, evidenceSessions))}</section>`,
+    `<section data-extension-section="user_audit_automation"><h2>Automation candidates</h2><p class="muted">Advisory only. Report generation never writes Skills, commands, templates, or host config.</p>${sectionCards(automation, renderAutomationCard)}</section>`,
+    leverageHtml
+  ].join('');
 }
 
 function sourceTable(report) {
