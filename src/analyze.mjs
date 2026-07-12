@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 import { AGGREGATE_TASKS } from './aggregate-protocol.mjs';
 import { normalizeLocale } from './i18n.mjs';
+import { corpusEfficiency } from './efficiency.mjs';
 
 const dateOnly = (value) => value ? value.slice(0, 10) : null;
 const number = (value) => new Intl.NumberFormat('en-US').format(value);
@@ -377,6 +378,7 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
       sections
     },
     extensions: extensions ?? {},
+    efficiency: corpusEfficiency(ordered),
     observations: buildObservations(totals, sourceCount, projectEntries, ordered),
     recommendations: buildRecommendations(totals, projectEntries, sourceCount)
   };

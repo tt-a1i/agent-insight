@@ -39,7 +39,9 @@ const EXTENSION_HTML_HEADINGS = new Set([
   '可自动化候选',
   '一个最高杠杆改动',
   '证据索引',
-  '读取覆盖'
+  '读取覆盖',
+  'Efficiency signals',
+  '效率信号',
 ]);
 
 function hasOwn(object, key) {

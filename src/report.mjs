@@ -204,6 +204,41 @@ function renderUserAudit(report, t) {
   ].join('');
 }
 
+function renderEfficiency(report, t) {
+  const eff = report.efficiency;
+  if (!eff || !eff.sessions?.length) return '';
+  const labels = t.efficiency;
+  const fmt = (v) => v === null || v === undefined ? '—' : String(v);
+  const agg = eff.aggregates;
+  const th = eff.thresholds;
+  const hasPartial = eff.sessions.some((s) => Object.values(s.coverage).some((c) => !c));
+  const partialNote = hasPartial ? `<p class="muted">${escapeHtml(labels.partial)}</p>` : '';
+  const corpusRows = [
+    [labels.clarificationDensity, agg.clarificationDensity, th.clarificationDensityHigh, labels.clarificationDensityHint],
+    [labels.correctionRate, agg.correctionRate, th.correctionRateHigh, labels.correctionRateHint],
+    [labels.dominantToolShare, agg.dominantToolShare, th.dominantToolShareHigh, labels.dominantToolShareHint],
+    [labels.turnsPerHour, agg.turnsPerHour, th.turnsPerHourLow, labels.turnsPerHourHint],
+    [labels.verificationGap, null, null, labels.verificationGapHint]
+  ];
+  const corpusHtml = `<table class="efficiency-table"><thead><tr><th>${escapeHtml(labels.signal)}</th><th>${escapeHtml(labels.mean)}</th><th>${escapeHtml(labels.median)}</th><th>${escapeHtml(labels.threshold)}</th></tr></thead><tbody>${corpusRows.map(([name, stats, threshold]) => {
+    const mean = stats ? fmt(stats.mean) : '—';
+    const median = stats ? fmt(stats.median) : '—';
+    const gapRate = name === labels.verificationGap ? fmt(agg.verificationGapRate) : '—';
+    const thVal = name === labels.verificationGap ? fmt(th.verificationGapRateHigh) : fmt(threshold);
+    return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(mean)}</td><td>${escapeHtml(median)}</td><td>${escapeHtml(thVal)}</td></tr>`;
+  }).join('')}</tbody></table>`;
+  const hintsHtml = corpusRows.map(([, , , hint]) => hint ? `<p class="muted efficiency-hint">${escapeHtml(hint)}</p>` : '').join('');
+  const flagged = eff.flagged ?? [];
+  const flaggedHtml = flagged.length
+    ? `<h3>${escapeHtml(labels.flagged)}</h3>${flagged.map((f) => `<article class="prose-card efficiency-flag"><h4>${escapeHtml(labels.signal)} #${f.index + 1}</h4><ul>${f.issues.map((issue) => `<li><strong>${escapeHtml(issue.signal)}</strong>: ${escapeHtml(fmt(issue.value))} <span class="muted">(阈值 ${escapeHtml(fmt(issue.threshold))}, ${escapeHtml(issue.severity)})</span></li>`).join('')}</ul></article>`).join('')}`
+    : `<p class="muted">${escapeHtml(labels.noFlags)}</p>`;
+  const hasClarification = flagged.some((f) => f.issues.some((i) => i.signal === 'clarification_density'));
+  const skeletonBlock = hasClarification
+    ? `<div class="callout efficiency-skeleton"><h3>${escapeHtml(labels.skeletonTitle)}</h3><p class="muted">${escapeHtml(labels.skeletonLead)}</p>${copyBlock(labels.skeletonTemplate)}</div>`
+    : '';
+  return `<section id="efficiency-signals" data-extension-section="efficiency"><h2>${escapeHtml(labels.heading)}</h2><p class="muted">${escapeHtml(labels.lead)}</p>${partialNote}${corpusHtml}${hintsHtml}${flaggedHtml}${skeletonBlock}</section>`;
+}
+
 function sourceTable(report) {
   const rows = Object.entries(report.sources).map(([source, stats]) => `| ${source} | ${number(stats.sessions)} | ${number(stats.userMessages)} | ${number(stats.assistantMessages)} | ${number(stats.toolCalls)} | ${number(stats.toolErrors)} |`);
   return rows.length
@@ -249,7 +284,11 @@ export function renderMarkdown(report) {
       ''
     ].filter((line) => line !== null).join('\n')
     : '';
-  return `# Agent Insight\n\n${range} · ${requestedWindowLabel(report)}\n\n${coachSection}## At a glance\n\n${metrics.map(([label, value]) => `- **${label}:** ${number(value)}`).join('\n')}\n\n## Agent coverage\n\n${sourceTable(report)}\n\n## Read coverage\n\n${projectFilterNote(report)} ${semanticFailureNote(report)}\n\n${coverageTable(report)}\n\n## Project areas\n\n${ranked(report.projects)}\n\n## Top tools\n\n${ranked(report.topTools)}\n\n## Providers\n\n${ranked(report.providers)}\n\n## Models\n\n${ranked(report.models)}\n\n## Evidence-backed observations\n\n${list(report.observations)}\n\n## Next moves\n\n${list(report.recommendations)}\n\n## Evidence policy\n\n${report.privacy.note}\n`;
+  const eff = report.efficiency;
+  const effSection = eff && eff.sessions?.length
+    ? [`## Efficiency signals`, ``, ...eff.sessions.slice(0, 10).map((s, i) => `- **Session #${i + 1}:** clarification ${s.clarificationDensity ?? '—'} · correction ${s.correctionRate ?? '—'} · dominant tool ${s.dominantToolShare ?? '—'} (${s.dominantTool ?? '?'}) · turns/hr ${s.turnsPerHour ?? '—'} · verification gap ${s.verificationGap ?? '—'}`), ...(eff.flagged?.length ? [``, `**Flagged:** ${eff.flagged.map((f) => `#${f.index + 1}`).join(', ')}`] : []), ``].join('\n')
+    : '';
+  return `# Agent Insight\n\n${range} · ${requestedWindowLabel(report)}\n\n${coachSection}## At a glance\n\n${metrics.map(([label, value]) => `- **${label}:** ${number(value)}`).join('\n')}\n\n## Agent coverage\n\n${sourceTable(report)}\n\n## Read coverage\n\n${projectFilterNote(report)} ${semanticFailureNote(report)}\n\n${coverageTable(report)}\n\n## Project areas\n\n${ranked(report.projects)}\n\n## Top tools\n\n${ranked(report.topTools)}\n\n## Providers\n\n${ranked(report.providers)}\n\n## Models\n\n${ranked(report.models)}\n\n${effSection}## Evidence-backed observations\n\n${list(report.observations)}\n\n## Next moves\n\n${list(report.recommendations)}\n\n## Evidence policy\n\n${report.privacy.note}\n`;
 }
 
 export function renderAgentPrompt(report) {
@@ -542,8 +581,9 @@ export function renderHtml(report) {
   }).join('');
   const evidenceIndex = `<section id="evidence-index"><h2>${escapeHtml(t.sections.evidenceIndex)}</h2><div class="table-wrap"><table><thead><tr><th>${escapeHtml(t.sections.session)}</th><th>${escapeHtml(t.sections.agent)}</th><th>${escapeHtml(t.sections.date)}</th><th>${escapeHtml(t.sections.project)}</th><th>${escapeHtml(t.audit.reopen)}</th></tr></thead><tbody>${evidenceRows || `<tr><td colspan="5">${escapeHtml(t.sections.noEvidenceSessions)}</td></tr>`}</tbody></table></div>${renderEvidenceQuotations(report)}</section>`;
   const userAuditHtml = renderUserAudit(report, t);
+  const efficiencyHtml = renderEfficiency(report, t);
   const primaryActionHtml = renderPrimaryAction(report, t);
-  html = html.replace(`<section><h2>${escapeHtml(t.sections.readCoverage)}</h2>`, `${userAuditHtml}${evidenceIndex}<section><h2>${escapeHtml(t.sections.readCoverage)}</h2><p class="muted">${escapeHtml(semanticFailureNote(report))}</p>`);
+  html = html.replace(`<section><h2>${escapeHtml(t.sections.readCoverage)}</h2>`, `${userAuditHtml}${efficiencyHtml}${evidenceIndex}<section><h2>${escapeHtml(t.sections.readCoverage)}</h2><p class="muted">${escapeHtml(semanticFailureNote(report))}</p>`);
   const headerClose = html.indexOf('</header>');
   const headerEnd = headerClose < 0 ? -1 : headerClose + '</header>'.length;
   const tocStart = html.indexOf('<nav class="toc"', headerEnd);

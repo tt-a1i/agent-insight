@@ -1,3 +1,4 @@
+import { efficiencyToFindings } from './efficiency.mjs';
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -1143,6 +1144,16 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
     eligibility: run.eligibility,
     locale: runLocale(run)
   });
+  // Attribution bridge: inject deterministic efficiency findings alongside LLM audit findings
+  if (report.extensions?.userAudit?.status === 'complete' && report.extensions.userAudit.aggregate) {
+    const effFindings = efficiencyToFindings(report.efficiency, report.semantic?.sessions ?? []);
+    if (effFindings.length > 0) {
+      report.extensions.userAudit.aggregate.remaining = [
+        ...(report.extensions.userAudit.aggregate.remaining ?? []),
+        ...effFindings
+      ];
+    }
+  }
   const files = await writeReport(report, outputDirectory);
   run.status = run.failures?.length || run.extensionFailures?.userAudit ? 'partial' : 'complete';
   run.completedAt = new Date().toISOString();

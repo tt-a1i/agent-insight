@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { basename, extname } from 'node:path';
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const SHORT_TURN_THRESHOLD = 40;
+const CORRECTION_PATTERN = /(?:不对|别|不要|重(?:新|做)|停下|等等|错了|换|stop|no\b|wrong|redo|revert|undo|不行|不是)/i;
+const LAST_TOOL_SEQUENCE_LIMIT = 10;
 
 export class TranscriptLimitError extends Error {
   constructor(message) {
@@ -153,6 +156,8 @@ function observeTool(session, name, input = {}) {
   const toolName = firstString(name, 'unknown');
   session.toolCalls += 1;
   increment(session.toolNames, toolName);
+  session.lastToolSequence.push(toolName);
+  if (session.lastToolSequence.length > LAST_TOOL_SEQUENCE_LIMIT) session.lastToolSequence.shift();
   const command = typeof input.command === 'string' ? input.command : '';
   if (command.includes('git commit')) session.gitCommits += 1;
   if (command.includes('git push')) session.gitPushes += 1;
@@ -239,6 +244,8 @@ function observeRecord(session, record) {
   const timestamp = firstDate(record);
   if (isUser) {
     session.userMessages += 1;
+    if (userText.length > 0 && userText.length <= SHORT_TURN_THRESHOLD) session.shortUserTurns += 1;
+    if (CORRECTION_PATTERN.test(userText)) session.correctionTurns += 1;
     if (userText.includes('[Request interrupted by user')) session.userInterruptions += 1;
     if (timestamp) {
       session.userMessageTimestamps.push(timestamp);
@@ -304,6 +311,9 @@ function emptySession(filePath, source) {
     inputTokens: 0,
     outputTokens: 0,
     toolNames: {},
+    shortUserTurns: 0,
+    correctionTurns: 0,
+    lastToolSequence: [],
     languages: {},
     gitCommits: 0,
     gitPushes: 0,
