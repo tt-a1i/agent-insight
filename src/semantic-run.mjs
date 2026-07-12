@@ -389,7 +389,7 @@ export async function semanticSubmissionForTask({ runsRoot, runId, taskId }) {
   } else {
     throw new Error('Unsupported semantic task id.');
   }
-  return taskSubmissionPath(runsRoot, runId, id);
+  return join(runDirectory(runsRoot, runId), 'submission.json');
 }
 
 export async function prepareSemanticRun({ runsRoot, request, candidates, analyzer, diagnostics = [] }) {

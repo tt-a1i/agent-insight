@@ -13,11 +13,32 @@ import { HOSTS, resolveInsightRequest } from './interaction.mjs';
 import { failSemanticTask, finalizeSemanticRun, getSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun, semanticSubmissionForTask } from './semantic-run.mjs';
 import { compareParityReports, createBlindSemanticBundle, evaluateBlindSemanticRatings } from './parity.mjs';
 
-const HELP = `agent-insight — local-first cross-agent session insights\n\nUsage:\n  agent-insight insights --host claude|codex|cursor|opencode|pi\n  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD]\n  agent-insight semantic next|ingest|finalize --run <run-id> [--task <task-id>] [--output <directory>]\n  agent-insight parity compare --reference <report.json> --candidate <report.json> [--output <comparison.json>] [--blind-output <review.json>]\n  agent-insight parity evaluate --review <rated-review.json> [--seed <secret>] [--output <result.json>]\n  agent-insight doctor [--source auto|codex,claude,...] [--json]\n  agent-insight report [--source auto|codex,claude,...] [--days 30|--all]\n                       [--project <path>] [--input <export-file>] [--output <directory>]\n                       [--include-subagents] [--max-file-mb 16] [--max-sessions 100]\n                       [--max-discovery-files 10000]\n  agent-insight install --agent claude|codex|cursor|opencode|pi [--scope project|user] [--force]\n  agent-insight import --source groq|generic --from <export-file>\n\nInsights uses the current host model for semantic analysis. Reports may include representative user quotations, project paths, agent identity, dates, and session identifiers. Complete transcripts and tool payloads are not copied into the report.\n`;
+const HELP = `agent-insight — local-first cross-agent fused session insights
 
-const PUBLIC_HELP = HELP
-  .replace('semantic next|ingest|finalize --run <run-id> [--task <task-id>] [--output <directory>]', 'semantic next|ingest|fail|finalize --run <run-id> --host <host> --model <exact-model-id-or-unknown> [--task <task-id>] [--reason <failure-code>] [--output <directory>]')
-  .replace('parity compare --reference <report.json> --candidate <report.json>', 'parity compare --reference <report.json> --reference-sha256 <trusted-hash> --candidate <report.json>');
+One-shot fused report: Claude-compatible baseline plus sharp user-audit extensions.
+Uses the current host model only. Independent runs always re-analyze; there is no cross-run cache.
+
+Usage:
+  agent-insight insights --host claude|codex|cursor|opencode|pi
+  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD]
+  agent-insight semantic next|ingest|fail|finalize --run <run-id> --host <host> --model <exact-model-id-or-unknown> [--task <task-id>] [--reason <failure-code>] [--output <directory>]
+  agent-insight parity compare --reference <report.json> --reference-sha256 <trusted-hash> --candidate <report.json> [--output <comparison.json>] [--blind-output <review.json>]
+  agent-insight parity evaluate --review <rated-review.json> [--seed <secret>] [--output <result.json>]
+  agent-insight doctor [--source auto|codex,claude,...] [--json]
+  agent-insight report [--source auto|codex,claude,...] [--days 30|--all]
+                       [--project <path>] [--input <export-file>] [--output <directory>]
+                       [--include-subagents] [--max-file-mb 16] [--max-sessions 100]
+                       [--max-discovery-files 10000]
+  agent-insight install --agent claude|codex|cursor|opencode|pi [--scope project|user] [--force]
+  agent-insight import --source groq|generic --from <export-file>
+
+Host integrations drive prepare → semantic next → ingest|fail → finalize with the active model.
+Cursor coverage is experimental; OpenCode is root-session-only; Groq is provider/import-only (not an install host).
+Reports may include representative user quotations, project paths, agent identity, dates, and session identifiers.
+Complete transcripts and tool payloads are not copied into the report.
+`;
+
+const PUBLIC_HELP = HELP;
 
 function parseFlags(args) {
   const flags = { _: [] };
@@ -40,6 +61,8 @@ function printDoctor(rows, json) {
     console.log(JSON.stringify(rows, null, 2));
     return;
   }
+  console.log('One-shot fused Insights: prepare → semantic next/ingest/fail → finalize (no cross-run cache).');
+  console.log('Cursor collection is experimental; OpenCode lists root sessions only; Groq is import-only.\n');
   for (const row of rows) {
     const locations = row.roots.map((root) => root.found ? `found ${root.path}` : `missing ${root.path}`).join('\n    ');
     console.log(`${row.source.padEnd(9)} ${row.mode}\n    ${locations}`);
@@ -356,7 +379,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     const scope = flags.scope ?? 'project';
     if (!['project', 'user'].includes(scope)) throw new Error('--scope must be project or user.');
     const target = await installIntegration({ agent, scope, cwd, home, force: Boolean(flags.force) });
-    console.log(`Installed ${agent} integration: ${target}`);
+    console.log(`Installed fused ${agent} Insights bridge (prepare → next → ingest|fail → finalize): ${target}`);
     return;
   }
   if (command === 'import') return runImport(flags, context);

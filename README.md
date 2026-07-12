@@ -16,9 +16,11 @@ The shared command is **`/agent-insights`**. It deliberately does not reuse
 
 Agent Insight has two modes:
 
-1. **Semantic Insights** is the full workflow. It uses the *current host
-   agent's configured model* to analyze selected local sessions and produce an
-   evidence-backed report.
+1. **Semantic Insights** is the one-shot fused workflow. It uses the *current
+   host agent's configured model* to analyze selected local sessions and
+   produce one evidence-backed report: Claude-compatible baseline sections
+   plus sharp user-audit extensions. There is no cross-run facet cache;
+   every fresh invocation re-analyzes.
 2. **Deterministic local report** is a no-model fallback. It aggregates local
    metadata only, runs fully locally, and never makes a model or network call.
 
@@ -39,12 +41,14 @@ Explicit CLI flags are the non-interactive equivalent of those choices.
       +-- prepare       discover selected sessions and create a resumable run
       |
       +-- semantic next request exactly one current-host-model task
+      |                 (session facets → baseline aggregates →
+      |                  session_audit → audit_aggregate)
       |
-      +-- ingest        validate and persist its derived facet
+      +-- ingest|fail   validate and persist, or record a partial failure
       |       ^
-      |       | repeat until all session and aggregate tasks are complete
+      |       | repeat until the fused task loop is complete
       |
-      +-- finalize      render timestamped HTML, report.html, Markdown, JSON
+      +-- finalize      render one fused HTML/MD/JSON report
 ```
 
 The invoking host owns semantic work. Claude Code uses its current Claude
@@ -125,20 +129,22 @@ agent-insight prepare --host claude --source claude,cursor --start 2026-06-01 --
 ```
 
 `prepare` prints a run ID. The current host model then completes one validated
-task at a time:
+task at a time through the fused baseline-plus-audit loop:
 
 ```bash
 agent-insight semantic next --run <run-id> --host <host> --model <exact-model-id-or-unknown>
 # Analyze the returned request with the current host model. Write only its
 # required JSON result to the returned submissionPath.
 agent-insight semantic ingest --run <run-id> --task <task-id> --host <host> --model <same-model-id>
+# On a lasting analyzer/schema failure after one safe retry:
+agent-insight semantic fail --run <run-id> --task <task-id> --reason analyzer_failure --host <host> --model <same-model-id>
 
-# Repeat next → host analysis → ingest until next returns kind: complete.
+# Repeat next → host analysis → ingest|fail until next returns kind: complete.
 agent-insight semantic finalize --run <run-id> --host <host> --model <same-model-id>
 ```
 
 `finalize` refuses incomplete runs. On success it prints a `file://` link to
-the timestamped HTML report and also writes the stable `report.html`,
+the timestamped fused HTML report and also writes the stable `report.html`,
 `report.md`, and `report.json` artifacts under `~/.agent-insight/usage-data/`
 by default. Keep the run ID after an error: the same run can be resumed rather
 than guessed, skipped, or silently re-analyzed by a different model.
@@ -239,9 +245,10 @@ pass.
   stores sessions in the same format. See the
   [parity contract](docs/parity/claude-2.1.206.md) for its exact 1:1 and
   transparent-exceed requirements.
-- Cross-agent semantic analysis requires the active host to execute the
-  `next → analyze → ingest` loop and produce the protocol's validated JSON.
-  There is no hidden provider fallback or fabricated completion.
+- Cross-agent semantic analysis requires the active host to execute the fused
+  `next → analyze → ingest|fail` loop (baseline plus audit extensions) and
+  produce the protocol's validated JSON. There is no hidden provider fallback,
+  cross-run cache, or fabricated completion.
 - Cursor collection is experimental and excludes unsupported private formats,
   remote/background chats, and nested subagent transcripts by default.
   Authorship filtering for Cursor is best-effort and remains an explicit

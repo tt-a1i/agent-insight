@@ -33,11 +33,21 @@ const HOST_LABELS = {
   pi: 'Pi'
 };
 
+function coverageNote(agent) {
+  if (agent === 'cursor') {
+    return 'Coverage note: Cursor collection is experimental (local agent-transcript JSONL only). Private formats, remote/background chats, and nested subagent transcripts are not promised; treat Cursor coverage as explicit and incomplete when summarizing.\n\n';
+  }
+  if (agent === 'opencode') {
+    return 'Coverage note: OpenCode covers root sessions only via the official session list/export. Forked and child sessions are outside this adapter; state that limit explicitly when summarizing.\n\n';
+  }
+  return '';
+}
+
 function commonBody(agent) {
   const host = HOST_LABELS[agent];
-  return `Use the current ${host} model to run the complete Agent Insights semantic workflow. Never start another ${host} CLI process or hand semantic analysis to a different model.
+  return `Use the current ${host} model to run one fused Agent Insights report: Claude-compatible baseline sections plus sharp user-audit extensions. Never start another ${host} CLI process, switch providers, or hand semantic analysis to a different model. Fresh invocations always re-analyze; there is no cross-run cache command to consult or warm.
 
-On every invocation, ask the user these questions and wait for both answers. Do not reuse an answer from an earlier run:
+${coverageNote(agent)}On every invocation, ask the user these questions and wait for both answers. Do not reuse an answer from an earlier run:
 
 1. Agent scope: current agent, all agents, or specific agents. If they choose specific agents, ask them to select from Claude, Codex, Cursor, OpenCode, and Pi.
 2. Time range: last 7 days, last 30 days, last 90 days, all history, or a custom start and end date in YYYY-MM-DD form.
@@ -51,23 +61,23 @@ Translate the answers into command arguments:
 
 Before preparing the run, determine the exact model ID of the current ${host} model. If the host does not expose it, use the literal \`unknown\`. Never omit \`--model\`.
 
-Then perform this workflow from the project root:
+Then perform this one-shot fused workflow from the project root:
 
 1. Run \`agent-insight prepare --host ${agent} --model <exact-model-id-or-unknown> --source <comma-separated-sources> <time-range-arguments>\` and capture the returned run ID.
 2. Run \`agent-insight semantic next --run <run-id> --host ${agent} --model <same-exact-model-id-or-unknown>\` and parse its JSON task.
-3. If the task says the run is complete, continue to step 7. If it is an \`aggregate_batch\`, analyze all listed task requests in parallel with the current ${host} model; otherwise analyze the single request. Follow every required JSON shape exactly and produce result objects without task envelopes or Markdown fences.
+3. If the task says the run is complete, continue to step 7. Task kinds include session facets, \`aggregate_batch\` (baseline aggregates), \`session_audit\`, and \`audit_aggregate\`. Audit tasks appear only after baseline aggregates finish. If the task is an \`aggregate_batch\`, analyze all listed task requests in parallel with the current ${host} model; otherwise analyze the single request. Follow every required JSON shape exactly and produce result objects without task envelopes or Markdown fences.
 4. Write each result object as JSON to that task's exact, unique \`submissionPath\`. Never copy transcript text into another file.
 5. Ingest completed results one at a time with \`agent-insight semantic ingest --run <run-id> --task <task-id> --host ${agent} --model <same-exact-model-id-or-unknown>\`.
 6. Repeat from step 2 until the next task says the run is complete.
-7. Run \`agent-insight semantic finalize --run <run-id> --host ${agent} --model <same-exact-model-id-or-unknown>\`, open the generated report, and give the user its location plus a concise evidence-backed summary.
+7. Run \`agent-insight semantic finalize --run <run-id> --host ${agent} --model <same-exact-model-id-or-unknown>\`, open the generated fused report, and give the user its location plus a concise evidence-backed summary of both baseline and audit sections.
 
-If \`semantic next\` returns \`source_changed\`, fail that frozen task with reason \`source_changed\` and continue. If a model call or schema validation fails, retry once when safe. If it still fails, run \`agent-insight semantic fail --run <run-id> --task <task-id> --reason analyzer_failure --host ${agent} --model <same-exact-model-id-or-unknown>\` (use \`invalid_analyzer_response\` for invalid JSON/schema), then continue so the final report exposes partial semantic coverage. If the user interrupts, leave the task pending and preserve the run ID for resumption. Never invent a completed result, silently skip a task, or claim full coverage when the run is incomplete.`;
+If \`semantic next\` returns \`source_changed\`, fail that frozen task with reason \`source_changed\` and continue. If a model call or schema validation fails, retry once when safe. If it still fails, run \`agent-insight semantic fail --run <run-id> --task <task-id> --reason analyzer_failure --host ${agent} --model <same-exact-model-id-or-unknown>\` (use \`invalid_analyzer_response\` for invalid JSON/schema), then continue so the final report exposes partial semantic or audit-extension coverage. If the user interrupts, leave the task pending and preserve the run ID for resumption. Never invent a completed result, silently skip a task, claim full coverage when the run is incomplete, or use any removed cache command.`;
 }
 
 export function renderIntegration(agent) {
   if (!AGENTS.includes(agent)) throw new Error(`Unknown host agent: ${agent}. Supported: ${AGENTS.join(', ')}`);
   if (agent === 'codex') {
-    return `---\nname: agent-insights\ndescription: Generate a local-first cross-agent workflow report and interpret its metadata carefully.\n---\n\n# Agent Insights\n\n${commonBody(agent)}\n`;
+    return `---\nname: agent-insights\ndescription: Generate a fused local-first Agent Insights report (baseline plus sharp user audit) with the current Codex model.\n---\n\n# Agent Insights\n\n${commonBody(agent)}\n`;
   }
   if (agent === 'pi') {
     return [
@@ -79,7 +89,7 @@ export function renderIntegration(agent) {
       '',
       'export default function (pi: ExtensionAPI) {',
       '  pi.registerCommand("agent-insights", {',
-      '    description: "Generate a complete semantic Agent Insights report with the current Pi model",',
+      '    description: "Generate one fused Agent Insights report (baseline plus sharp user audit) with the current Pi model",',
       '    handler: async (_args, ctx) => {',
       '      try {',
       '        const scope = await ctx.ui.select("Agent scope", ["Current agent", "All agents", "Specific agents"]);',
@@ -128,12 +138,12 @@ export function renderIntegration(agent) {
       '        if (!runId) throw new Error("prepare did not return a semantic run ID");',
       '',
       '        pi.sendUserMessage([',
-      '          `Continue Agent Insights semantic run ${runId} with the current Pi model. Do not start another Pi process or use another model.`,',
+      '          `Continue the fused Agent Insights run ${runId} with the current Pi model. Do not start another Pi process, switch providers, or use another model. There is no cross-run cache command.`,',
       '          `1. Run agent-insight semantic next --run ${runId} --host pi --model ${modelId} and parse the JSON task.`,',
-      '          "2. If it is aggregate_batch, analyze all listed requests in parallel with the current Pi model; otherwise analyze the single request. Write each required result JSON to its unique submissionPath. Do not copy transcript text elsewhere.",',
+      '          "2. Task kinds include session facets, aggregate_batch (baseline), session_audit, and audit_aggregate. Audit tasks follow baseline aggregates. If it is aggregate_batch, analyze all listed requests in parallel with the current Pi model; otherwise analyze the single request. Write each required result JSON to its unique submissionPath. Do not copy transcript text elsewhere.",',
       '          `3. Ingest completed results one at a time with agent-insight semantic ingest --run ${runId} --task <task-id> --host pi --model ${modelId}.`,',
       '          "4. Repeat steps 1-3 until the next task says complete.",',
-      '          `5. Run agent-insight semantic finalize --run ${runId} --host pi --model ${modelId}, then open and summarize the generated report.`,',
+      '          `5. Run agent-insight semantic finalize --run ${runId} --host pi --model ${modelId}, then open and summarize the fused baseline-plus-audit report.`,',
       '          `If next returns source_changed, fail that task with reason source_changed. If analysis or validation still fails after one retry, run agent-insight semantic fail --run ${runId} --task <task-id> --reason analyzer_failure --host pi --model ${modelId}, continue the loop, and let the report show partial coverage. On user interruption, preserve the pending run.`,',
       '        ].join("\\n"));',
       '      } catch (error) {',
@@ -146,7 +156,7 @@ export function renderIntegration(agent) {
     ].join('\n');
   }
   if (agent === 'opencode') {
-    return `---\ndescription: Generate and interpret a local-first cross-agent workflow report\n---\n\n${commonBody(agent)}\n`;
+    return `---\ndescription: Generate one fused Agent Insights report (baseline plus sharp user audit; root sessions only)\n---\n\n${commonBody(agent)}\n`;
   }
   return `# Agent Insights\n\n${commonBody(agent)}\n`;
 }

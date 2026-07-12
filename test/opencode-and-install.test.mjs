@@ -117,15 +117,41 @@ test('installs Codex skills in the shared .agents skill surface', () => {
   assert.equal(path, '/tmp/project/.agents/skills/agent-insights/SKILL.md');
 });
 
-test('host bridges prepare semantic runs for their active model', () => {
+test('host bridges prepare fused semantic runs for their active model', () => {
   assert.deepEqual(AGENTS, ['claude', 'codex', 'cursor', 'opencode', 'pi']);
-  assert.match(renderIntegration('claude'), /agent-insight prepare --host claude --model .* --source/);
-  assert.match(renderIntegration('codex'), /agent-insight prepare --host codex --model .* --source/);
-  assert.match(renderIntegration('opencode'), /agent-insight prepare --host opencode --model .* --source/);
-  assert.match(renderIntegration('cursor'), /agent-insight prepare --host cursor --model .* --source/);
+  for (const agent of AGENTS.filter((name) => name !== 'pi')) {
+    const body = renderIntegration(agent);
+    assert.match(body, new RegExp(`agent-insight prepare --host ${agent} --model .* --source`));
+    assert.match(body, /agent-insight semantic next --run/);
+    assert.match(body, /agent-insight semantic ingest --run/);
+    assert.match(body, /agent-insight semantic fail --run/);
+    assert.match(body, /agent-insight semantic finalize --run/);
+    assert.match(body, /session_audit/);
+    assert.match(body, /audit_aggregate/);
+    assert.doesNotMatch(body, /agent-insight\s+cache\b/i);
+  }
+  const pi = renderIntegration('pi');
+  assert.match(pi, /\["prepare", "--host", "pi", "--model", modelId, "--source"/);
+  assert.match(pi, /agent-insight semantic next --run/);
+  assert.match(pi, /agent-insight semantic ingest --run/);
+  assert.match(pi, /agent-insight semantic fail --run/);
+  assert.match(pi, /agent-insight semantic finalize --run/);
+  assert.match(pi, /session_audit/);
+  assert.match(pi, /audit_aggregate/);
+  assert.doesNotMatch(pi, /agent-insight\s+cache\b/i);
+  assert.match(renderIntegration('cursor'), /experimental/i);
+  assert.match(renderIntegration('opencode'), /root sessions only/i);
   assert.doesNotMatch(renderIntegration('claude'), /claude\s+(?:-p|--print)/i);
   assert.doesNotMatch(renderIntegration('codex'), /codex\s+exec/i);
   assert.doesNotMatch(renderIntegration('opencode'), /opencode\s+run/i);
   assert.doesNotMatch(renderIntegration('cursor'), /cursor-agent\s+(?:-p|--print)/i);
   assert.throws(() => renderIntegration('groq'), /Unknown host agent/);
+});
+
+test('install refuses Groq because it is a provider, not a slash-command host', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-insight-groq-install-'));
+  await assert.rejects(
+    () => installIntegration({ agent: 'groq', scope: 'project', cwd: root, home: root }),
+    /Groq is a provider/
+  );
 });
