@@ -10,7 +10,6 @@ import { parseSessionFile } from './parse.mjs';
 import { summarizeSessions } from './analyze.mjs';
 import { writeReport } from './report.mjs';
 import { exportOpenCodeSession } from './opencode.mjs';
-import { addMessagesToPrivacyState, assertNoRawOverlap, assertSafeDerivedOutput, createPrivacyState } from './privacy.mjs';
 
 const RUN_SCHEMA = 'agent-insight/semantic-run-v1';
 const PROMPT_VERSION = 'session-facet-v1';
@@ -80,7 +79,15 @@ function freezeDeterministicMetrics(session, input) {
 
 function aggregateContext(run) {
   const completed = run.sessions.filter((session) => session.status === 'complete');
-  const semanticSessions = completed.map(({ id, date, facet }) => ({ id, date, facet }));
+  const semanticSessions = completed.map(({ id, date, source, sessionId, projectPath, projectLabel, facet }) => ({
+    id,
+    date,
+    source,
+    sessionId: sessionId ?? id,
+    projectPath: projectPath ?? null,
+    projectLabel: projectLabel ?? null,
+    facet
+  }));
   const metrics = summarizeSessions(completed.map((session) => session.metrics), {
     semantic: { analyzer: run.analyzer, sessions: semanticSessions, sections: run.sections }
   }).insights;
@@ -120,10 +127,6 @@ function deterministicEligibility(input) {
 function isWarmupFacet(facet) {
   const categories = Object.entries(facet?.goalCategories ?? {}).filter(([, count]) => Number(count) > 0);
   return categories.length === 1 && categories[0][0] === 'warmup_minimal';
-}
-
-function assertNoInputOverlap(value, messages) {
-  for (const chunk of splitSessionMessages(messages)) assertNoRawOverlap(value, chunk);
 }
 
 function eligibilitySummary(sessions, preparationFailures = []) {
@@ -184,15 +187,12 @@ async function writeManifest(runsRoot, manifest) {
   return { directory, manifestPath: file };
 }
 
-async function exposeTask(runsRoot, run, task, messages = null) {
+async function exposeTask(runsRoot, run, task, _messages = null) {
   if (run.activeTask && run.activeTask.id !== task.id) throw new Error(`Semantic task ${run.activeTask.id} is still awaiting ingest or fail.`);
   if (!run.activeTask) {
-    run.privacyState ??= createPrivacyState();
-    if (messages) addMessagesToPrivacyState(run.privacyState, messages);
     run.activeTask = {
       id: task.id,
-      exposedAt: new Date().toISOString(),
-      privacySegmentCount: run.privacyState.segments.length
+      exposedAt: new Date().toISOString()
     };
     await writeManifest(runsRoot, run);
   }
@@ -328,6 +328,8 @@ export async function prepareSemanticRun({ runsRoot, cache, request, candidates,
       id: input.opaqueId,
       source: input.source,
       date: input.date,
+      sessionId: input.sessionId,
+      projectPath: input.projectPath ?? null,
       projectLabel: input.projectLabel,
       contentHash: input.contentHash,
       locator,
@@ -363,7 +365,6 @@ export async function prepareSemanticRun({ runsRoot, cache, request, candidates,
       else {
         try {
           const cached = validateCachedSessionFacet(lookup.facet, input);
-          assertNoInputOverlap(cached, input.messages);
           cacheStats.hits += 1;
           session.status = isWarmupFacet(cached) ? 'excluded' : 'complete';
           session.eligibilityReason = isWarmupFacet(cached) ? 'warmup_minimal' : null;
@@ -387,7 +388,6 @@ export async function prepareSemanticRun({ runsRoot, cache, request, candidates,
     sections: {},
     sectionFailures: {},
     aggregateChunks: {},
-    privacyState: createPrivacyState(),
     preparationFailures,
     failures: preparationFailures.map((failure) => ({ taskId: null, reason: failure.reason, source: failure.source, at: new Date().toISOString() })),
     eligibility: eligibilitySummary(sessions, preparationFailures),
@@ -516,8 +516,6 @@ export async function ingestSemanticResult({ runsRoot, cache, runId, taskId, res
   const run = await getSemanticRun({ runsRoot, runId });
   const batched = run.aggregateBatch?.ids?.includes(String(taskId));
   if (!batched && run.activeTask?.id !== String(taskId)) throw new Error('Semantic result does not match the task most recently exposed by semantic next.');
-  assertSafeDerivedOutput(result);
-  assertNoRawOverlap(result, run.privacyState);
   if (String(taskId).startsWith('aggregate-chunk:')) {
     const match = /^aggregate-chunk:([a-z_]+):(\d+)$/.exec(String(taskId));
     const section = match?.[1];
@@ -554,6 +552,9 @@ export async function ingestSemanticResult({ runsRoot, cache, runId, taskId, res
       source: session.source,
       date: session.date,
       opaqueId: session.id,
+      sessionId: session.sessionId,
+      projectPath: session.projectPath,
+      projectLabel: session.projectLabel,
       messages: allowedIndexes.map((messageIndex) => ({ index: messageIndex }))
     };
     const chunk = validateSessionChunkResult(result, chunkInput);
@@ -596,6 +597,9 @@ export async function ingestSemanticResult({ runsRoot, cache, runId, taskId, res
     source: session.source,
     date: session.date,
     opaqueId: session.id,
+    sessionId: session.sessionId,
+    projectPath: session.projectPath,
+    projectLabel: session.projectLabel,
     messages: supportedIndexes.map((index) => ({ index }))
   };
   const facet = validateSessionFacet(result, frozenInput);
@@ -664,7 +668,15 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
     cache: run.cache,
     failures: run.failures,
     sectionFailures: run.sectionFailures,
-    sessions: eligibleSessions.map(({ id, date, source, facet }) => ({ id, date, source, facet })),
+    sessions: eligibleSessions.map(({ id, date, source, sessionId, projectPath, projectLabel, facet }) => ({
+      id,
+      date,
+      source,
+      sessionId: sessionId ?? id,
+      projectPath: projectPath ?? null,
+      projectLabel: projectLabel ?? null,
+      facet
+    })),
     sections: run.sections
   };
   const report = summarizeSessions(sessions, {

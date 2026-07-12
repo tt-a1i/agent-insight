@@ -269,9 +269,11 @@ tokens, then the summaries are passed to facet extraction. Chunk summaries are
 not persisted separately.
 
 **[Transparent exceed]** raw transcript content may be sent to the invoking
-host model, as explicitly accepted by the user, but raw prompts, source code,
-tool inputs, and tool outputs must not be persisted in reports or semantic
-caches. Report evidence uses faithful paraphrase plus opaque source locators.
+host model, as explicitly accepted by the user. Final reports may persist
+representative user quotations, absolute project paths, agent identity, dates,
+and session identifiers. Complete transcripts, tool arguments, and tool results
+are not copied into the report. Content-privacy filters that rejected verbatim
+overlap, absolute paths, or credential-shaped prose are not used.
 
 ### Per-session facet schema
 
@@ -566,9 +568,10 @@ Claude-side misunderstandings, wrong approaches, and bugs from user-side
 context or environment friction.
 
 **[Transparent exceed]** every aggregate claim carries source agent, date,
-and opaque session locators. Default report text paraphrases rather than
-copying long transcript excerpts. A finding is a recurring pattern only with
-at least two supporting sessions; one-session findings are labelled examples.
+and concrete session locators. Representative user quotations and project paths
+may appear when grounded in validated evidence. A finding is a recurring pattern
+only with at least two supporting sessions; one-session findings are labelled
+examples.
 
 ## 7. HTML report contract
 
@@ -704,8 +707,9 @@ font request even though the report file is local.
 
 **[Transparent exceed]** the semantic cache:
 
-- contains validated structured facets and opaque locators, never raw session
-  text, source code, tool inputs, or tool output;
+- contains validated structured facets with concrete evidence labels (session
+  identifiers, project paths, optional quotations) while still excluding complete
+  transcript copies, tool arguments, and tool results;
 - uses directory mode `0700` and file mode `0600`;
 - keys entries by source session identity and a content hash;
 - invalidates on protocol version, prompt version, content hash, and analyzer
@@ -770,7 +774,7 @@ targets for the default Agent Insight profile:
 | Displayed sessions can exceed faceted sessions | Preserve reference aggregate | Display semantic coverage prominently |
 | Warmup facets are excluded from totals but the aggregate summary call receives the unfiltered facet map | Preserve with a targeted fixture | Filter semantic evidence and totals consistently |
 | Aggregate reads `user_instructions_to_claude`, but the facet prompt does not request it | Preserve compatibility with legacy cache fields | Make repeated instructions a versioned, validated field |
-| Raw project paths enter meta and model prompts | Preserve fixture with synthetic paths | Redact report paths and use opaque locators |
+| Raw project paths enter meta and model prompts | Preserve fixture with synthetic paths | Persist concrete project paths and session identifiers as evidence labels |
 | Neutral/delighted satisfaction may aggregate but not appear in fixed chart | Preserve fixed chart order | Show unmapped values or schema warnings |
 | TOC always contains Team Feedback while its generators are disabled | Preserve dangling anchor in strict snapshot | Remove dangling links or mark unavailable |
 | Initial time buckets use local `Date.getHours()` but offset `0` is labelled PT | Preserve under fixed test timezone | Correct timezone conversion and disclose timezone |

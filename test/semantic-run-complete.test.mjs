@@ -57,7 +57,11 @@ test('a semantic run progresses through every section and finalizes a timestampe
   await ingestSemanticResult({ runsRoot, cache, runId: prepared.id, taskId: facetTask.id, result: {
     underlying_goal: 'Fix a parser', goal_categories: { fix_bug: 1 }, outcome: 'fully_achieved', user_satisfaction_counts: { satisfied: 1 },
     claude_helpfulness: 'very_helpful', session_type: 'single_task', friction_counts: {}, friction_detail: '', primary_success: 'good_debugging',
-    brief_summary: 'Parser fixed.', evidence: [{ message_indexes: [1], description: 'The user asked for a parser fix.' }]
+    brief_summary: 'Parser fixed.', evidence: [{
+      message_indexes: [1],
+      description: 'The user asked for a parser fix.',
+      quotation: 'Fix the broken parser'
+    }]
   } });
   const id = facetTask.input.opaqueId;
   while (true) {
@@ -80,5 +84,10 @@ test('a semantic run progresses through every section and finalizes a timestampe
   assert.match(html, /At a Glance/);
   assert.match(html, /1 eligible/);
   assert.match(html, /The parser blinked first/);
-  assert.equal(html.includes('Fix the parser'), false);
+  assert.match(html, /Fix the broken parser/);
+  assert.match(html, /claude-parity/);
+  assert.match(html, /\/work\/parity/);
+  assert.match(final.report.privacy.note, /representative user quotations/);
+  assert.equal(final.report.semantic.sessions[0].sessionId, 'claude-parity');
+  assert.equal(final.report.semantic.sessions[0].projectPath, '/work/parity');
 });

@@ -4,7 +4,7 @@ import test from 'node:test';
 import { analyzeSessionFacet, validateSessionFacet } from '../src/protocol.mjs';
 import { createAggregateChunkRequest, createAggregateRequest, createAtAGlanceChunkRequest, splitAggregateSections, splitAggregateSessions, validateAggregateChunkResult, validateAggregateResult } from '../src/aggregate-protocol.mjs';
 
-test('session facet analysis validates evidence and returns no transcript text', async () => {
+test('session facet analysis validates concrete evidence including quotations', async () => {
   const secret = 'repair the private payment parser';
   let request;
   const facet = await analyzeSessionFacet({
@@ -13,6 +13,7 @@ test('session facet analysis validates evidence and returns no transcript text',
     opaqueId: 'session-7a9c',
     date: '2026-07-01',
     durationMinutes: 12,
+    projectPath: '/work/payments',
     projectLabel: 'payments',
     messages: [
       { index: 1, role: 'user', text: secret },
@@ -32,7 +33,11 @@ test('session facet analysis validates evidence and returns no transcript text',
         friction_detail: '',
         primary_success: 'good_debugging',
         brief_summary: 'The parser defect was fixed and verified.',
-        evidence: [{ message_indexes: [1, 2], description: 'Request followed by a verified implementation.' }]
+        evidence: [{
+          message_indexes: [1, 2],
+          description: 'Request followed by a verified implementation.',
+          quotation: secret
+        }]
       };
     }
   });
@@ -40,16 +45,21 @@ test('session facet analysis validates evidence and returns no transcript text',
   assert.equal(request.task, 'session_facet');
   assert.match(request.prompt, new RegExp(secret));
   assert.match(request.prompt, /Session ID: session-7a9c/);
+  assert.match(request.prompt, /Project: \/work\/payments/);
   assert.match(request.prompt, /Duration minutes: 12/);
+  assert.doesNotMatch(request.prompt, /Paraphrase every conclusion/);
   assert.equal(facet.outcome, 'fully_achieved');
   assert.deepEqual(facet.evidence[0], {
     source: 'claude',
     date: '2026-07-01',
     opaqueSessionId: 'session-7a9c',
+    sessionId: 'session-7a9c',
+    projectPath: '/work/payments',
+    projectLabel: 'payments',
     messageIndexes: [1, 2],
-    description: 'Request followed by a verified implementation.'
+    description: 'Request followed by a verified implementation.',
+    quotation: secret
   });
-  assert.equal(JSON.stringify(facet).includes(secret), false);
 });
 
 test('session facet rejects invented taxonomy labels and unbounded prose', () => {
@@ -64,7 +74,20 @@ test('session facet rejects invented taxonomy labels and unbounded prose', () =>
   assert.throws(() => validateSessionFacet({ ...base, goal_categories: { fix_bug: 1 }, brief_summary: 'x'.repeat(1_001) }, input), /too long/);
 });
 
-test('project areas aggregate keeps opaque evidence references', () => {
+test('project areas aggregate accepts concrete session identifiers as evidence', () => {
+  const context = {
+    metrics: { totalSessions: 1 },
+    sessions: [
+      { id: 'opaque-a', sessionId: 'claude-parity', date: '2026-07-01', facet: { underlyingGoal: 'g', briefSummary: 'b', goalCategories: {}, outcome: 'fully_achieved', userSatisfactionCounts: {}, agentHelpfulness: 'very_helpful', sessionType: 'single_task', frictionCounts: {}, frictionDetail: '', primarySuccess: 'none', userInstructionsToAgent: [], evidence: [] } }
+    ]
+  };
+  const result = validateAggregateResult('project_areas', {
+    areas: [{ name: 'Parser work', session_count: 1, description: 'Parser reliability.', evidence_session_ids: ['claude-parity'] }]
+  }, context);
+  assert.deepEqual(result.areas[0].evidenceSessionIds, ['opaque-a']);
+});
+
+test('project areas aggregate keeps evidence session references', () => {
   const context = {
     metrics: { totalSessions: 2 },
     sessions: [

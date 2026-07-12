@@ -4,7 +4,7 @@ Agent Insight is a local-first, cross-agent implementation of an insights
 command for coding agents. Its first goal is to align with the observable
 behavior of **Claude Code 2.1.206 `/insights`**; its second goal is to exceed
 that baseline transparently when a cross-agent workflow needs stronger
-coverage, choice, and privacy boundaries.
+coverage, choice, and evidence-bearing audit detail.
 
 The shared command is **`/agent-insights`**. It deliberately does not reuse
 `/insights`, which Claude Code already owns.
@@ -143,23 +143,23 @@ the timestamped HTML report and also writes the stable `report.html`,
 by default. Keep the run ID after an error: the same run can be resumed rather
 than guessed, skipped, or silently re-analyzed by a different model.
 
-## Derived-facet cache and transcript privacy
+## Derived-facet cache and evidence policy
 
 Semantic analysis needs transcript text transiently so the selected host model
 can reason about goals, outcomes, friction, and evidence. That text is
-provided only in the task sent to the invoking host; Agent Insight does not
-write it into its reports, cache, or run manifest.
+provided in the task sent to the invoking host. Final reports may persist
+representative user quotations, absolute project paths, agent identity, dates,
+and session identifiers as concrete evidence labels. Complete transcripts and
+tool payloads are not copied into the report.
 
-Instead, it caches validated **derived facets** under
+Agent Insight caches validated **derived facets** under
 `~/.agent-insight/cache/facets/`. A cache entry is keyed by opaque session
 identity, transcript content hash, analyzer host/model, and protocol version.
-It contains structured conclusions and short evidence paraphrases, never raw
-prompts, assistant text, source code, tool arguments, or tool output. Cache
-and report files are private (`0600`) in private directories (`0700`). Before
-anything is persisted, a transcript-derived privacy guard rejects meaningful
-verbatim spans, secret-like values, absolute paths, and credential-shaped
-output. Cache hit, miss, invalid, stale, bypass, and write-failure counts are
-recorded in the run and final report.
+Cache and report files are private (`0600`) in private directories (`0700`).
+Cache hit, miss, invalid, stale, bypass, and write-failure counts are
+recorded in the run and final report. Content-privacy filters that blocked
+verbatim overlap, absolute paths, or credential-shaped prose have been
+removed; filesystem and parser safety controls remain.
 
 ```bash
 agent-insight cache status
@@ -266,10 +266,10 @@ pass.
   complete.
 - Deterministic reports measure metadata, not intent, satisfaction, or code
   quality. Semantic reports separate measured metrics from model inference and
-  use opaque source locators for evidence.
+  may include representative quotations plus concrete session and project labels.
 - Sending a semantic task to the current host model is still subject to that
   host and provider's own privacy, retention, and account policies. Agent
-  Insight itself does not upload or persist the raw transcript.
+  Insight itself does not upload transcripts to a third-party service.
 
 ## Development
 
@@ -282,7 +282,7 @@ node bin/agent-insight.mjs report --source codex,claude --max-sessions 5 --outpu
 
 The suite includes transcript parsing, source-adapter boundaries, interaction
 selection, semantic protocol validation, resumable runs, derived-facet caching,
-report privacy, and host integration behavior.
+evidence-bearing report rendering, and host integration behavior.
 
 ## References
 

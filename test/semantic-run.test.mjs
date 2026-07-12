@@ -26,7 +26,8 @@ test('semantic run exposes transcript only in the next task and persists only a 
   const stored = await readFile(run.manifestPath, 'utf8');
   assert.equal(stored.includes('Fix the broken parser'), false);
   assert.equal(stored.includes('I will fix and verify it'), false);
-  assert.equal(stored.includes('/work/parity'), false);
+  assert.equal(JSON.parse(stored).sessions[0].projectPath, '/work/parity');
+  assert.equal(JSON.parse(stored).sessions[0].sessionId, 'claude-parity');
   assert.equal(JSON.parse(stored).sessions[0].metrics.userMessages, 2);
   assert.equal((await stat(run.directory)).mode & 0o777, 0o700);
   assert.equal((await stat(run.manifestPath)).mode & 0o777, 0o600);
@@ -159,7 +160,7 @@ test('a transcript changed before its task is exposed is excluded instead of abo
   assert.equal(run.sessions[0].eligibilityReason, 'changed_after_prepare');
 });
 
-test('verbatim analyzer output is rejected before cache or manifest persistence', async () => {
+test('verbatim quotations and absolute paths ingest without content-privacy rejection', async () => {
   const home = await mkdtemp(join(tmpdir(), 'agent-insight-run-privacy-'));
   const runsRoot = join(home, 'runs');
   const cache = new FacetCache(join(home, 'facets'));
@@ -171,7 +172,7 @@ test('verbatim analyzer output is rejected before cache or manifest persistence'
     analyzer: { host: 'claude', model: 'test-model' }
   });
   const task = await nextSemanticTask({ runsRoot, cache, runId: prepared.id });
-  await assert.rejects(ingestSemanticResult({
+  const facet = await ingestSemanticResult({
     runsRoot,
     cache,
     runId: prepared.id,
@@ -179,12 +180,19 @@ test('verbatim analyzer output is rejected before cache or manifest persistence'
     result: {
       underlying_goal: 'Repair parsing', goal_categories: { fix_bug: 1 }, outcome: 'fully_achieved',
       user_satisfaction_counts: { satisfied: 1 }, claude_helpfulness: 'very_helpful', session_type: 'single_task',
-      friction_counts: {}, friction_detail: '', primary_success: 'good_debugging', brief_summary: 'Fix the broken parser',
-      evidence: [{ message_indexes: [1], description: 'The user requested a parsing repair.' }]
+      friction_counts: {}, friction_detail: 'Touched /work/parity/app.ts', primary_success: 'good_debugging',
+      brief_summary: 'Fix the broken parser',
+      evidence: [{
+        message_indexes: [1],
+        description: 'User asked to fix the parser in /work/parity',
+        quotation: 'Fix the broken parser'
+      }]
     }
-  }), /verbatim transcript overlap/);
-  assert.equal((await getSemanticRun({ runsRoot, runId: prepared.id })).sessions[0].status, 'pending');
-  assert.equal((await cache.status()).entries, 0);
+  });
+  assert.equal(facet.evidence[0].quotation, 'Fix the broken parser');
+  assert.equal(facet.evidence[0].projectPath, '/work/parity');
+  assert.equal(facet.evidence[0].sessionId, 'claude-parity');
+  assert.equal((await getSemanticRun({ runsRoot, runId: prepared.id })).sessions[0].status, 'complete');
 });
 
 test('schema-invalid cached facets are evicted and re-analyzed', async () => {
@@ -266,19 +274,26 @@ test('long session projections are summarized in bounded current-host chunks', a
     result: {
       underlying_goal: 'Handle many requests', goal_categories: { implement_feature: 1 }, outcome: 'partially_achieved',
       user_satisfaction_counts: { unsure: 1 }, claude_helpfulness: 'moderately_helpful', session_type: 'multi_task',
-      friction_counts: {}, friction_detail: '', primary_success: 'multi_file_changes', brief_summary: `Request 0 ${'u'.repeat(40)}`,
-      evidence: [{ message_indexes: [supportedIndex], description: 'A supported request underlies the synthesis.' }]
-    }
-  }), /verbatim transcript overlap/);
-  await assert.rejects(ingestSemanticResult({
-    runsRoot, cache, runId: prepared.id, taskId: current.id,
-    result: {
-      underlying_goal: 'Handle many requests', goal_categories: { implement_feature: 1 }, outcome: 'partially_achieved',
-      user_satisfaction_counts: { unsure: 1 }, claude_helpfulness: 'moderately_helpful', session_type: 'multi_task',
       friction_counts: {}, friction_detail: '', primary_success: 'multi_file_changes', brief_summary: 'Several tasks were handled.',
       evidence: [{ message_indexes: [unsupported], description: 'An unsupported original index was invented.' }]
     }
   }), /unknown message index/);
+  const facet = await ingestSemanticResult({
+    runsRoot, cache, runId: prepared.id, taskId: current.id,
+    result: {
+      underlying_goal: 'Handle many requests', goal_categories: { implement_feature: 1 }, outcome: 'partially_achieved',
+      user_satisfaction_counts: { unsure: 1 }, claude_helpfulness: 'moderately_helpful', session_type: 'multi_task',
+      friction_counts: {}, friction_detail: '', primary_success: 'multi_file_changes',
+      brief_summary: `Request 0 ${'u'.repeat(40)}`,
+      evidence: [{
+        message_indexes: [supportedIndex],
+        description: 'A supported request underlies the synthesis.',
+        quotation: `Request 0 ${'u'.repeat(40)}`
+      }]
+    }
+  });
+  assert.equal(facet.evidence[0].quotation, `Request 0 ${'u'.repeat(40)}`);
+  assert.equal((await getSemanticRun({ runsRoot, runId: prepared.id })).sessions[0].status, 'complete');
 });
 
 test('an exposed task remains recoverable when its source changes before a repeated next', async () => {

@@ -21,11 +21,26 @@ function semantic() {
   const evidenceSessionIds = ['opaque-a'];
   return {
     analyzer: { host: 'claude', model: 'current' },
-    sessions: [{ id: 'opaque-a', date: '2026-07-01', source: 'claude', facet: {
-      underlyingGoal: 'Fix a parser', briefSummary: 'Parser fixed', goalCategories: { fix_bug: 1 }, outcome: 'fully_achieved',
-      userSatisfactionCounts: { satisfied: 1 }, agentHelpfulness: 'very_helpful', sessionType: 'single_task',
-      frictionCounts: { tool_failed: 1 }, frictionDetail: 'A command failed.', primarySuccess: 'good_debugging'
-    } }],
+    sessions: [{
+      id: 'opaque-a',
+      sessionId: 'claude-session-a',
+      date: '2026-07-01',
+      source: 'claude',
+      projectPath: '/work/parser',
+      projectLabel: 'parser',
+      facet: {
+        underlyingGoal: 'Fix a parser', briefSummary: 'Parser fixed', goalCategories: { fix_bug: 1 }, outcome: 'fully_achieved',
+        userSatisfactionCounts: { satisfied: 1 }, agentHelpfulness: 'very_helpful', sessionType: 'single_task',
+        frictionCounts: { tool_failed: 1 }, frictionDetail: 'A command failed.', primarySuccess: 'good_debugging',
+        evidence: [{
+          messageIndexes: [1],
+          description: 'User requested a parser fix.',
+          quotation: 'Please fix the parser now',
+          sessionId: 'claude-session-a',
+          projectPath: '/work/parser'
+        }]
+      }
+    }],
     sections: {
       at_a_glance: { whatsWorking: 'Verification works.', whatsHindering: 'Tools sometimes fail.', quickWins: 'Create a skill.', ambitiousWorkflows: 'Automate releases.', evidenceSessionIds },
       project_areas: { areas: [{ name: 'Parser reliability', sessionCount: 1, description: 'Parser fixes and tests.', evidenceSessionIds }] },
@@ -78,10 +93,11 @@ test('HTML follows the Claude 2.1.206 insights information architecture in order
   assert.match(html, /aria-label="Top tools data"/);
   assert.match(html, /2–10s/);
   assert.match(html, /Morning/);
-  assert.match(html, /Evidence: opaque-a/);
+  assert.match(html, /Evidence: claude-session-a · claude · 2026-07-01 · \/work\/parser/);
   assert.match(html, /Primary successes/);
   assert.match(html, /Evidence index/);
-  assert.match(html, /<td>opaque-a<\/td><td>claude<\/td><td>2026-07-01<\/td>/);
+  assert.match(html, /Please fix the parser now/);
+  assert.match(html, /<td>claude-session-a<\/td><td>claude<\/td><td>2026-07-01<\/td><td>\/work\/parser<\/td>/);
   assert.doesNotMatch(html, /https:\/\//);
   assert.equal(compareParityReports(report, report, { candidateHtml: html }).acceptance.structuralParity, true);
 });

@@ -14,6 +14,7 @@ test('Claude semantic input keeps bounded dialogue and tool names but omits tool
   assert.equal(input.source, 'claude');
   assert.equal(input.date, '2026-07-01');
   assert.equal(input.projectLabel, 'alpha');
+  assert.equal(input.projectPath, '/work/alpha');
   assert.equal(input.sessionId, 'claude-1');
   assert.match(input.opaqueId, /^[a-f0-9]{24}$/);
   assert.match(input.contentHash, /^[a-f0-9]{64}$/);

@@ -48,6 +48,7 @@ export function openCodeAnalysisInput(document) {
     opaqueId: createHash('sha256').update(`opencode\u0000${sessionId}`).digest('hex').slice(0, 24),
     contentHash: createHash('sha256').update(JSON.stringify(document)).digest('hex'),
     date: Number.isFinite(created) ? new Date(created).toISOString().slice(0, 10) : null,
+    projectPath: info.directory ? String(info.directory) : null,
     projectLabel: info.directory ? basename(String(info.directory).replace(/[\\/]+$/, '')) : 'unknown',
     userMessageCount,
     durationMinutes: Number.isFinite(created) && Number.isFinite(updated) && updated >= created ? Math.round((updated - created) / 60_000) : 0,

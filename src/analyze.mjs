@@ -303,7 +303,7 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
     privacy: {
       rawTranscriptRetained: false,
       rawTranscriptWritten: false,
-      note: 'This report contains derived metadata only. It does not include prompt text, tool output, source code, file paths, or session IDs.'
+      note: 'This report may include representative user quotations, absolute project paths, agent identity, dates, and session identifiers. It does not copy complete transcripts or tool payloads.'
     },
     parity: {
       target: 'claude-code/2.1.206',
@@ -315,11 +315,16 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
       evidenceContext: {
         sessions: (semantic?.sessions ?? []).filter((session) => session.facet).map((session) => ({
           id: session.id,
+          sessionId: session.sessionId ?? session.id,
           source: session.source ?? 'unknown',
           date: session.date,
+          projectPath: session.projectPath ?? null,
           grounding: (session.facet.evidence ?? []).map((item) => ({
             messageIndexes: item.messageIndexes,
-            description: item.description
+            description: item.description,
+            quotation: item.quotation ?? null,
+            sessionId: item.sessionId ?? session.sessionId ?? session.id,
+            projectPath: item.projectPath ?? session.projectPath ?? null
           }))
         })).filter((session) => session.grounding.length > 0)
       }
@@ -345,7 +350,14 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
     semantic: {
       enabled: Boolean(semantic),
       analyzer: semantic?.analyzer ?? null,
-      sessions: (semantic?.sessions ?? []).map(({ id, date, source }) => ({ id, date, source: source ?? 'unknown' })),
+      sessions: (semantic?.sessions ?? []).map(({ id, date, source, sessionId, projectPath, projectLabel }) => ({
+        id,
+        date,
+        source: source ?? 'unknown',
+        sessionId: sessionId ?? id,
+        projectPath: projectPath ?? null,
+        projectLabel: projectLabel ?? null
+      })),
       failures: semanticFailures,
       sectionFailures: semantic?.sectionFailures ?? {},
       sections

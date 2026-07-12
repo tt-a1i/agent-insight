@@ -127,6 +127,7 @@ export async function extractAnalysisInput(file, source, {
     opaqueId: createHash('sha256').update(`${source}\u0000${sessionKey}`).digest('hex').slice(0, 24),
     contentHash: snapshot.contentHash,
     date: state.date,
+    projectPath: state.project ?? null,
     projectLabel: state.project ? basename(state.project.replace(/[\\/]+$/, '')) : 'unknown',
     userMessageCount: state.userMessageCount,
     durationMinutes: state.firstTimestamp === null || state.lastTimestamp === null ? 0 : Math.round((state.lastTimestamp - state.firstTimestamp) / 60_000),
