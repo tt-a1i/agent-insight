@@ -1,7 +1,7 @@
-# Claude Code `/insights` parity contract
+# Claude Code `/insights` compatibility contract
 
-- Status: implemented compatibility contract; acceptance requires the parity gates below
-- Reference: Claude Code `2.1.206`
+- Status: implemented compatibility profile; fixture-protected; optional evaluation tools exist (not product release gates)
+- Reference: Claude Code `2.1.206` (observable-behavior design reference)
 - Reference build: `2026-07-09T01:39:20Z`
 - Reference Git SHA: `edc8ebf7f852d3abffad32a5bf8e49e439f92afb`
 - Agent Insight command: `/agent-insights`
@@ -16,8 +16,14 @@ Every requirement is labelled as one of:
   the Agent Insight default where they conflict with an unsafe or misleading
   Claude behavior.
 
-Cross-agent support is not evidence of Claude parity. The Claude profile must
-pass its own structural, factual, and semantic gates first.
+Product completion is Host/Source functional acceptance (any available Host
+model analyzing any supported Source). That product goal does not require
+live Claude certification.
+
+In an **optional** live or reference compatibility comparison only: passing
+cross-agent Host/Source support is not by itself evidence of Claude profile
+parity. Use the fixture suite and optional evaluation tools below when
+comparing against a Claude baseline capture.
 
 ## 1. Invocation and model ownership
 
@@ -827,22 +833,28 @@ The required parity fixture set includes:
 Model processes are replaced by deterministic public-interface runners in
 tests; private implementation functions are not mocked.
 
-## 12. Acceptance gates
+## 12. Optional compatibility evaluation
 
-Parity is complete only when all gates pass:
+These checks protect and optionally score the Claude compatibility profile.
+They are **not** product ship gates. Fixture coverage of structural and
+deterministic behavior is the in-repo regression bar. Live reference compare
+and blind review remain optional developer tools.
 
-1. **Structural parity, 100%:** every Claude 2.1.206 command state, report
-   section, metric, chart, empty state, and recoverable error has a
-   corresponding implementation or explicit compatibility fixture.
-2. **Factual correctness, 100%:** every deterministic value recomputes from
-   fixtures and every semantic example resolves to source evidence. Fabricated
-   evidence is a release blocker.
-3. **Blind semantic quality:** for the same Claude sessions, at least 80% of
-   hidden pairwise evaluations rate Agent Insight tied with or better than
+1. **Structural coverage (fixtures / optional compare):** every Claude 2.1.206
+   command state, report section, metric, chart, empty state, and recoverable
+   error has a corresponding implementation or explicit compatibility fixture.
+2. **Factual correctness:** every deterministic value recomputes from fixtures
+   and every semantic example resolves to source evidence. Fabricated evidence
+   is a release blocker for report quality (independent of live Claude
+   certification).
+3. **Blind semantic quality (optional):** when running a blind compare against
+   a trusted Claude capture of the same sessions, at least 80% of hidden
+   pairwise evaluations should rate Agent Insight tied with or better than
    Claude on accuracy, specificity, usefulness, and personalization.
 
-Transparent-exceed capabilities are evaluated only after these gates pass.
-They cannot compensate for a missing Claude capability.
+Transparent-exceed capabilities must not hide a missing Claude baseline
+capability in the compatibility profile. They do not require a live Claude
+certification pass before the product may ship.
 
 ## 13. Evidence sources
 

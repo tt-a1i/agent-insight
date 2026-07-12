@@ -1,15 +1,34 @@
-# Claude baseline parity acceptance
+# Compatibility evaluation notes
 
-This document records how to certify that Agent Insight fused extensions do
-**not** break Claude Code 2.1.206 baseline parity, and how to collect live-host
-smoke evidence. It deliberately separates:
+## Product decision (overrides older certification goals)
 
-| Kind | What it proves | What it does **not** prove |
+Agent Insight product completion is **Host + Model + Source** functional acceptance:
+
+- supported session discovery for each Source
+- semantic analysis owned by the current Host model
+- fused Claude-compatible baseline + user-audit report
+- sharp user-audit with quotation/locator evidence
+- bounded prompts and single-run frozen-task recovery
+- honest coverage and failure states
+
+**Non-goals for product release (explicit user decision):**
+
+- live Claude Code 2.1.206 independent reference capture
+- out-of-band SHA-256 / live structural or deterministic score `1`
+- blind semantic review against Claude
+- five-host in-host UI / REPL slash-command smoke
+- Claude CLI availability, login, or authentication
+
+Historical Issue #8 asked for reference / blind / live certification. That requirement is **superseded**: those items are optional developer or research tooling, not product blockers. Claude unavailable or unauthenticated does **not** mean Agent Insight is incomplete. The project may state feature implementation is complete without claiming official Claude certification.
+
+| Kind | What it proves | Product role |
 | --- | --- | --- |
-| Gate / fixture tests (`npm test`) | Extension schema and HTML headings are excluded from baseline scoring; partial source/extension failure still yields a usable baseline with honest coverage | Live parity against Claude Code |
-| Self-comparison of two Agent Insight reports | Harness wiring and HTML contract checks | Real Claude parity (forbidden as certification) |
-| Trusted independent reference compare | Structural + deterministic gates against Claude 2.1.206 | Semantic quality (still needs blind review) |
-| Live host smoke | Install / invoke / frozen-task resume / finalize on real hosts | Score `1` without a trusted reference |
+| Gate / fixture tests (`npm test`) | Extension schema and HTML headings excluded from baseline scoring; partial source/extension failure still yields a usable baseline | **Product regression** — internal evidence, not official Claude certification |
+| Self-comparison of two Agent Insight reports | Harness wiring and HTML contract checks | Developer check only; forbidden as “Claude certification” |
+| Trusted independent reference compare | Optional structural + deterministic scores vs a captured Claude report | **Optional** compatibility evaluation |
+| Blind semantic evaluate | Optional `acceptance.overall` when machine gates + blind ratings pass | **Optional**; `acceptance.overall` is not a ship/release flag |
+| Isolated CLI host smoke | Install + frozen-task resume wiring under disposable `HOME` | **Development wiring evidence**, not a product certificate |
+| In-host UI slash smoke | Invoke `/agent-insights` inside each host UI/REPL | **Optional**; non-blocking |
 
 ## Baseline scoring exclusions (always in code)
 
@@ -28,7 +47,7 @@ Those headings may appear only as a suffix after the Claude baseline `h2` sequen
 
 Blind semantic review bundles cover the eight Claude aggregate sections only. Extension audit content must not appear in the blinded payload.
 
-## Gate tests (fixture-labeled, not live certification)
+## Gate tests (fixture-labeled compatibility profile)
 
 ```bash
 npm run check
@@ -41,11 +60,13 @@ Parity gate coverage lives in:
 - `test/report-html-parity.test.mjs` — rendered fused HTML keeps baseline order; partial source + incomplete audit remains usable
 - `test/semantic-run-complete.test.mjs` — end-to-end audit failure still finalizes Claude baseline sections
 
-These tests must never be summarized as “parity score 1 against Claude.”
+These tests protect the compatibility profile. They must never be summarized as “official Claude parity score 1” or as a product incompleteness claim when a live reference is absent.
 
-## Independent Claude Code 2.1.206 reference (required for live structural/deterministic certification)
+## Optional: independent Claude Code 2.1.206 reference compare
 
-### Prerequisites
+For researchers who want a live structural/deterministic comparison against a captured Claude `/insights` report. **Not required for product completion.**
+
+### Prerequisites (when running this optional tool)
 
 1. An **independently captured** Claude Code **2.1.206** `/insights` report, normalized into Agent Insight report JSON shape (or captured via the documented normalization path).
 2. Provenance on the reference object:
@@ -65,7 +86,7 @@ These tests must never be summarized as “parity score 1 against Claude.”
 3. An **out-of-band** SHA-256 of the reference file bytes (recorded outside the JSON itself — commit note, release artifact digest, or signed manifest). Self-hashing the same file you just wrote is not trusted provenance.
 4. A candidate Agent Insight report + HTML produced from the **same** Claude session corpus (or an agreed shared fixture corpus).
 
-### Commands (when the reference exists)
+### Commands
 
 ```bash
 # Record the out-of-band digest once at capture time (example):
@@ -87,30 +108,22 @@ agent-insight parity evaluate \
   --output docs/parity/artifacts/semantic-result.json
 ```
 
-Machine acceptance requires:
+An optional compatibility evaluation may report:
 
 - `acceptance.trustedReference === true`
 - `acceptance.structuralParity === true` (`structural.score === 1`)
 - `acceptance.deterministicCorrectness === true` (`deterministic.score === 1`)
 - Blind semantic tie-or-better ≥ 0.8 (`parity evaluate`)
 
-Store comparison JSON under `docs/parity/artifacts/` only when produced from a trusted reference. Do not commit fabricated reference JSON.
+`acceptance.overall === true` means **that optional evaluation** passed. It does **not** mean Agent Insight is complete or shippable, and `false` / absence of a reference does **not** mean the product is incomplete.
 
-### Current blocker (recorded 2026-07-12)
+Store comparison JSON under `docs/parity/artifacts/` only when produced from a trusted reference. Do not commit fabricated reference JSON. Do not invent reference HTML/JSON to “green” an optional evaluation.
 
-| Check | Result |
-| --- | --- |
-| In-repo independent Claude 2.1.206 reference artifact | **Absent** — no provenance-bearing `report.json` / digest under the repository |
-| Local `claude --version` | **2.1.207** (not 2.1.206) |
-| Out-of-band SHA-256 for a 2.1.206 capture | **Unavailable** |
-| Trusted structural + deterministic live scores | **Blocked** — cannot claim score 1 |
-| Blind semantic live review | **Blocked** on the same prerequisite |
+Local Claude CLI version, login state, and whether a 2.1.206 reference exists on a given machine are **not** project blockers.
 
-Until a 2.1.206 reference with an out-of-band digest is obtained, keep the exclusion code and gate tests; do not invent reference HTML/JSON.
+## Development wiring smoke (isolated temp project/home)
 
-## Live host smoke (isolated temp project/home)
-
-Use disposable directories so user integration files are never overwritten.
+Use disposable directories so user integration files are never overwritten. This proves install + CLI resume wiring; it is not a product certification certificate.
 
 ```bash
 ROOT="$(mktemp -d /tmp/agent-insight-smoke-XXXX)"
@@ -120,13 +133,13 @@ cd "$ROOT/project"
 git init -q
 
 # Install into the isolated home/project only (scope flags as supported):
-npm link   # or: node /path/to/insight/bin/agent-insight.mjs install --host <host> ...
+npm link   # or: node /path/to/insight/bin/agent-insight.mjs install --agent <host> ...
 
 # For each host: Claude Code, Codex, Cursor, OpenCode, Pi
 # 1) install slash command / skill into $ROOT only
-# 2) invoke /agent-insights (or host equivalent)
+# 2) drive prepare → semantic next → fail/continue → finalize via CLI
 # 3) leave the exposed task without ingest/fail; call semantic next again and confirm the same frozen task resumes
-# 4) ingest or fail, continue the loop, finalize, and confirm timestamped HTML + report.json under the isolated data root
+# 4) confirm timestamped HTML + report.json under the isolated data root
 ```
 
 Evidence to retain per host (when available):
@@ -136,41 +149,27 @@ Evidence to retain per host (when available):
 - frozen-task resume proof: two consecutive `semantic next` calls return the same task id before ingest/fail
 - final `report.html` / `report.json` paths and `parity.dataStatus` / `extensions.userAudit.status`
 
-### Current status (recorded 2026-07-12, updated after audit remediations)
+### Captured wiring evidence (2026-07-12)
 
-**Reference-gated certification (still blocked):**
-
-1. No trusted Claude Code **2.1.206** reference corpus is available on this machine (local Claude is newer / unpinned for certification).
-2. Without that independent reference, live structural/deterministic score `1` and blind semantic review must not be claimed.
-
-**Live-host smoke (independent of reference):**
-
-Live install / invoke / frozen-task resume / finalize smoke does **not** require a 2.1.206 reference. Isolated temp `HOME` / project roots are enough to avoid mutating the operator’s real host configs. Smoke proves host wiring only; it must not be summarized as Claude parity.
-
-**Completed on 2026-07-12 (isolated CLI smoke, not host-UI slash invoke):**
-
-Evidence: [`docs/parity/artifacts/2026-07-12-isolated-smoke/`](../artifacts/2026-07-12-isolated-smoke/).
+Evidence: [`docs/parity/artifacts/2026-07-12-isolated-smoke/`](artifacts/2026-07-12-isolated-smoke/).
 
 - Installed fused bridges for all five hosts into an isolated project root (`claude`, `codex`, `cursor`, `opencode`, `pi`).
 - Under the same isolated `HOME`, proved **frozen-task resume**: `semantic next` exposed task A, a second `semantic next` with no ingest/fail returned the same task A, then `semantic fail` → `semantic next` continue → `semantic finalize`.
 - Final report landed only under `$HOME/.agent-insight/usage-data/` inside the temp tree.
 
-**Still outstanding for full live acceptance:**
+In-host UI / REPL slash invoke across the five hosts remains an **optional** manual check. It is not a release gate.
 
-- Invoking `/agent-insights` (or host equivalent) from inside each live host UI / REPL, not only the CLI under isolated `HOME`.
-- Reference-gated structural/deterministic score `1` and blind semantic review (blocked on missing Claude 2.1.206 reference).
+## Summary
 
-## Honest summary for Issue #8
+**Done for product (code / fixtures / wiring):**
 
-**Certified in-repo (code / gate tests):**
+- Claude-compatible baseline + cross-agent Host/Source analysis + user audit.
+- Extension fields and trailing audit HTML headings excluded from Claude baseline scoring.
+- Partial source coverage and incomplete audit extensions still produce a usable baseline with honest coverage notes.
+- Isolated five-host **install** + isolated CLI **frozen-task resume** / fail / finalize evidence under `docs/parity/artifacts/2026-07-12-isolated-smoke/`.
 
-- Extension fields and trailing audit HTML headings are excluded from Claude baseline structural / deterministic / blind-semantic scoring.
-- Extension headings must not break required Claude HTML order.
-- Partial source coverage and incomplete audit extensions still produce a usable baseline report with honest coverage notes.
-
-**Not certified (live acceptance unfinished):**
+**Optional (not product incomplete if skipped):**
 
 - Independently captured Claude Code 2.1.206 reference with out-of-band SHA-256.
-- Live structural/deterministic score 1 against that reference.
-- Blind semantic tie-or-better against that reference.
-- Live five-host **in-host UI** slash-command invoke matrix (isolated five-host **install** + isolated CLI **frozen-task resume**/fail/finalize evidence is captured under `docs/parity/artifacts/2026-07-12-isolated-smoke/`).
+- Live structural/deterministic score 1 and blind semantic evaluate against that reference.
+- Live five-host in-host UI slash-command invoke matrix.

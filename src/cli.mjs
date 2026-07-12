@@ -35,6 +35,7 @@ Usage:
   agent-insight import --source groq|generic --from <export-file>
 
 Host integrations drive prepare → semantic next → ingest|fail → finalize with the active model.
+parity compare|evaluate is optional developer compatibility tooling; acceptance.overall is not a product ship gate.
 Cursor coverage is experimental; OpenCode is root-session-only; Groq is provider/import-only (not an install host).
 Reports may include representative user quotations, project paths, agent identity, dates, and session identifiers.
 Complete transcripts and tool payloads are not copied into the report.

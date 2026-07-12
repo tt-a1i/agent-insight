@@ -8,14 +8,18 @@ Semantic work stays with the model already selected in the invoking host. Agent 
 
 The project has two goals:
 
-1. Reproduce the observable Claude Code 2.1.206 `/insights` baseline.
-2. Extend that baseline with cross-agent scope, explicit time ranges, honest coverage, resumable execution, and a user-audit extension.
+1. Implement a Claude-compatible `/insights` baseline as a fixture-protected compatibility profile (observable Claude Code 2.1.206 behavior as design reference — not an official Claude certification claim).
+2. Extend that baseline across agents: Host/Source decoupling, explicit time ranges, honest coverage, resumable execution, and a user-audit extension.
+
+**Product model:** any available Host + that Host's current Model + any selected local Source corpus → one fused Agent Insight report.
+
+Feature implementation is complete under that model. Agent Insight does **not** claim official Claude parity certification.
 
 The shared command is `/agent-insights`. Codex exposes the same workflow as `$agent-insights`. Agent Insight does not replace Claude Code's built-in `/insights` command.
 
-**Default report language is Simplified Chinese** (`--locale zh`): HTML chrome (section titles, empty states, audit headings) and model-generated prose. The product title stays English `Agent Insight`. Pass `--locale en` for English chrome and prose. On Claude host, the HTML shell remains English `Claude Code Insights` for 2.1.206 parity regardless of locale; use `--locale en` when you also want English model prose.
+**Default report language is Simplified Chinese** (`--locale zh`): HTML chrome (section titles, empty states, audit headings) and model-generated prose. The product title stays English `Agent Insight`. Pass `--locale en` for English chrome and prose. On Claude host, the HTML shell remains English `Claude Code Insights` for the compatibility profile regardless of locale; use `--locale en` when you also want English model prose.
 
-> The exact baseline and every intentional extension are defined in the [Claude Code 2.1.206 parity contract](docs/parity/claude-2.1.206.md).
+> The compatibility profile and every intentional extension are defined in the [Claude Code 2.1.206 compatibility contract](docs/parity/claude-2.1.206.md).
 
 ## Why Agent Insight
 
@@ -104,7 +108,18 @@ Every invocation asks for agent scope and time range. Answers are not reused fro
 
 Pi needs `/reload` or a restart after installation when it is already running. The `agent-insight` executable must remain available on the host agent's `PATH`.
 
-## Host and source support
+## Host, Model, Source, and Compatibility Profile
+
+These four concepts are independent:
+
+| Concept | Meaning |
+| --- | --- |
+| **Host** | The coding agent that runs semantic analysis (Claude Code, Codex, Cursor, OpenCode, or Pi). |
+| **Model** | The model currently selected in that Host — the only semantic owner for the run. |
+| **Source** | Local session data being scanned (Claude, Codex, Cursor, OpenCode, Pi, or an import). May differ from the Host. |
+| **Compatibility Profile** | The Claude Code 2.1.206 observable baseline shape, protected by in-repo fixtures. Internal regression evidence — not official Claude certification. |
+
+**Host and Source are orthogonal.** A Codex Host can analyze Claude sessions; a Pi, OpenCode, Cursor, or Claude Host can analyze any other supported Source. Analysis of Claude sessions requires readable local session files only — not a working Claude CLI, Claude login, or Claude authentication. If a Source agent's CLI is missing or logged out, that only blocks that agent as a **Host** entry point; other Hosts can still analyze its local history when the files are present.
 
 | Host / source | Installed surface | Semantic owner | Collection boundary |
 | --- | --- | --- | --- |
@@ -113,7 +128,7 @@ Pi needs `/reload` or a restart after installation when it is already running. T
 | Cursor | `.cursor/commands/agent-insights.md` | Current Cursor model | Experimental local Agent transcript JSONL; authorship filtering is best-effort and remote/background formats are not promised. |
 | OpenCode | `.opencode/commands/agent-insights.md` | Active provider/model | Official `opencode session list` and sanitized export; public listing is root-session-only. |
 | Pi | `.pi/extensions/agent-insights.ts` | Active provider/model | Local Pi JSONL; `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` are honored. |
-| Groq | Import-only | Host using Groq | Groq is a provider, not a slash-command host. Use it behind OpenCode/Pi or import an explicit export. |
+| Groq | Import-only | Host using Groq | Groq is a provider / import source, not a slash-command host. Use it behind OpenCode/Pi or import an explicit export. |
 
 Groq is intentionally rejected by `agent-insight install --agent ...` because it is not a general coding-agent command host.
 
@@ -260,21 +275,28 @@ open ~/.agent-insight/latest/report.html
 
 Every report distinguishes unavailable, empty, partial, and available sources. It also exposes discovery caps, parse failures, changed inputs, exclusions, analyzer failures, and extension failures.
 
-## Claude Code 2.1.206 parity status
+## Product completion
 
-| Surface | In-repo status | What remains |
+Product completion depends on supported session discovery, current-Host model analysis, fused reports, user audit, bounded prompts, the frozen-task recovery state machine, coverage honesty, and failure states — **not** on live Claude reference capture, blind semantic review, five-host in-host UI smoke, or Claude CLI login.
+
+Missing Claude CLI availability or authentication does **not** mean Agent Insight is incomplete.
+
+## Compatibility profile status
+
+| Surface | In-repo status | Notes |
 | --- | --- | --- |
-| Baseline structural contract | Fixture-tested | A trusted independent Claude 2.1.206 reference is still required for live certification. |
-| Deterministic metrics | Fixture-tested | Live score `1` cannot be claimed without the same trusted reference corpus. |
-| Blind semantic baseline | Harness implemented | Tie-or-better in at least 80% of blinded sections remains blocked on the reference corpus. |
-| User-audit extension | Implemented outside baseline scoring | Audit fields and trailing HTML sections are excluded from Claude baseline structural, deterministic, and blind-semantic scoring. |
-| Host wiring | Isolated CLI smoke captured | Full in-host UI invocation remains outstanding across the five-host matrix. |
+| Baseline structural contract | Fixture-tested | Internal regression evidence for the Claude-compatible profile. |
+| Deterministic metrics | Fixture-tested | Same; not a live Claude certification claim. |
+| Blind semantic harness | Implemented | Optional developer tool for research comparisons. |
+| User-audit extension | Implemented outside baseline scoring | Audit fields and trailing HTML are excluded from Claude baseline scoring. |
+| Host wiring | Isolated CLI install + frozen-task resume smoke captured | Development wiring evidence; in-host UI slash smoke is optional and non-blocking. |
 
-Fixture tests prove harness behavior; they are not live Claude parity certification. Self-comparing two Agent Insight reports is also not certification.
+Fixture tests protect the compatibility profile. They are not official Claude certification. Self-comparing two Agent Insight reports is also not certification.
 
-The current evidence and blockers are documented in [parity acceptance](docs/parity/acceptance.md).
+Optional developer tooling (`parity compare` / `parity evaluate`) and `acceptance.overall` record one optional compatibility evaluation. They do **not** gate whether Agent Insight is complete or shippable. Details: [compatibility evaluation notes](docs/parity/acceptance.md).
 
 ```bash
+# Optional — developer compatibility tooling only:
 agent-insight parity compare \
   --reference claude-reference/report.json \
   --reference-sha256 <independently-recorded-sha256> \
@@ -284,14 +306,11 @@ agent-insight parity compare \
   --blind-output semantic-review.json \
   --seed <private-random-seed>
 
-# After an identity-blind reviewer fills each rating with A, B, or tie:
 agent-insight parity evaluate \
   --review semantic-review.json \
   --seed <same-private-random-seed> \
   --output semantic-result.json
 ```
-
-Machine acceptance requires a trusted reference hash, `structural.score: 1`, and `deterministic.score: 1`. Semantic acceptance requires tie-or-better in at least 80% of baseline sections.
 
 ## Known limits
 
@@ -301,7 +320,6 @@ Machine acceptance requires a trusted reference hash, `structural.score: 1`, and
 - Very large inputs use bounded rolling summaries. An input that cannot fit the safety envelope fails visibly instead of being silently sampled.
 - Semantic reports intentionally retain representative evidence and must be reviewed before external sharing.
 - Deterministic metadata cannot prove intent, satisfaction, or code quality; those claims require semantic analysis and evidence.
-- Full live acceptance still needs an independent Claude 2.1.206 reference and in-host UI smoke across all supported hosts.
 
 ## Troubleshooting
 
@@ -341,8 +359,8 @@ The suite covers parsing, source boundaries, authorship filtering, Claude branch
 
 ## References
 
-- [Claude Code 2.1.206 parity contract](docs/parity/claude-2.1.206.md)
-- [Parity acceptance and live-smoke status](docs/parity/acceptance.md)
+- [Claude Code 2.1.206 compatibility contract](docs/parity/claude-2.1.206.md)
+- [Compatibility evaluation notes (optional developer tooling)](docs/parity/acceptance.md)
 - [Claude Code commands](https://code.claude.com/docs/en/commands) and [session storage](https://code.claude.com/docs/en/sessions)
 - [OpenCode commands](https://opencode.ai/docs/commands) and [CLI reference](https://opencode.ai/docs/cli)
 - [Cursor custom commands](https://docs.cursor.com/en/agent/chat/commands)

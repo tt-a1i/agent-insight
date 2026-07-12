@@ -83,6 +83,8 @@ test('CLI help describes the fused one-shot flow without cache commands', () => 
   assert.match(HELP, /fused/i);
   assert.match(HELP, /semantic next\|ingest\|fail\|finalize/);
   assert.match(HELP, /no cross-run cache/i);
+  assert.match(HELP, /parity compare\|evaluate is optional developer compatibility tooling/i);
+  assert.match(HELP, /acceptance\.overall is not a product ship gate/i);
   assert.match(HELP, /Cursor coverage is experimental/i);
   assert.match(HELP, /OpenCode is root-session-only/i);
   assert.match(HELP, /Groq is provider\/import-only/i);

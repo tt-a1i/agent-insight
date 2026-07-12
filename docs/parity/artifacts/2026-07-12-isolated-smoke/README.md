@@ -1,10 +1,16 @@
 # Isolated CLI smoke evidence — 2026-07-12
 
+## Role
+
+Development and host-wiring evidence only. This artifact is **not** a product
+certification certificate and is **not** required to claim Agent Insight feature
+completion.
+
 ## Scope
 
 - Isolated ROOT: `/tmp/agent-insight-smoke-s5dS` (temp; not retained after capture)
 - `HOME` pointed at `$ROOT/home` so no real user integration files were written.
-- Host slash-command UI invoke was **not** exercised.
+- Host slash-command UI invoke was **not** exercised (optional, non-blocking).
 - This artifact covers isolated five-host **install** plus isolated CLI **frozen-task resume**, then fail/continue/finalize.
 
 ## Five-host install paths (project)
@@ -56,6 +62,6 @@ Observed:
 
 ## Explicit non-claims
 
-- Not Claude 2.1.206 reference parity.
-- Not in-host UI `/agent-insights` invoke for all five hosts.
+- Not Claude 2.1.206 reference parity (optional research tooling, not a product gate).
+- Not in-host UI `/agent-insights` invoke for all five hosts (optional; non-blocking for product completion).
 - Earlier mislabeled `fail → complete` path is **not** what this resume section proves; resume proof is the repeated `next` returning the same frozen task.
