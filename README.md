@@ -239,6 +239,12 @@ being mislabeled as an exact string comparison. Overall acceptance is closed
 until the trusted-reference, structural, deterministic, and semantic gates all
 pass.
 
+See [parity acceptance](docs/parity/acceptance.md) for extension-exclusion
+rules, reproducible commands, artifact expectations, and honest blockers when
+an independent Claude 2.1.206 reference or live hosts are unavailable. Fixture
+self-comparison is a gate test only — never treat it as live parity
+certification.
+
 ## Known limits and deliberate boundaries
 
 - Claude Code parity is a compatibility target, not a claim that every vendor

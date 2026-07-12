@@ -159,30 +159,6 @@ export function validateSessionFacet(value, input) {
   };
 }
 
-export function validateCachedSessionFacet(value, input) {
-  if (!value || typeof value !== 'object' || value.protocolVersion !== ANALYSIS_PROTOCOL_VERSION) {
-    throw new Error('Invalid cached session facet protocol.');
-  }
-  return validateSessionFacet({
-    underlying_goal: value.underlyingGoal,
-    goal_categories: value.goalCategories,
-    outcome: value.outcome,
-    user_satisfaction_counts: value.userSatisfactionCounts,
-    agent_helpfulness: value.agentHelpfulness,
-    session_type: value.sessionType,
-    friction_counts: value.frictionCounts,
-    friction_detail: value.frictionDetail,
-    primary_success: value.primarySuccess,
-    brief_summary: value.briefSummary,
-    user_instructions_to_agent: value.userInstructionsToAgent,
-    evidence: Array.isArray(value.evidence) ? value.evidence.map((item) => ({
-      message_indexes: item.messageIndexes,
-      description: item.description,
-      quotation: item.quotation
-    })) : value.evidence
-  }, input);
-}
-
 export async function analyzeSessionFacet(input, { completeJson } = {}) {
   if (typeof completeJson !== 'function') throw new Error('A host completeJson(request) capability is required.');
   const request = createSessionFacetRequest(input);

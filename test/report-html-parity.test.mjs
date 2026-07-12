@@ -102,6 +102,92 @@ test('HTML follows the Claude 2.1.206 insights information architecture in order
   assert.equal(compareParityReports(report, report, { candidateHtml: html }).acceptance.structuralParity, true);
 });
 
+test('fused user-audit extension HTML remains outside Claude baseline parity scoring', () => {
+  const finding = (accusation, severity = 'high') => ({
+    category: 'acceptance_criteria',
+    severity,
+    evidencePosture: 'established_pattern',
+    accusation,
+    explanation: 'The ask jumps to a fix without stating the gate.',
+    quotations: ['just fix it'],
+    locators: [{ sessionId: 'claude-session-a', messageIndexes: [1] }],
+    occurrenceCount: 1,
+    betterAlternative: 'Name the failing case first.',
+    rootCause: accusation.toLowerCase()
+  });
+  const extensions = {
+    userAudit: {
+      status: 'complete',
+      protocolVersion: 'user-audit/v1',
+      sessions: {},
+      aggregate: {
+        topThree: [finding('You ship without a gate'), finding('You retry without diagnosis', 'medium'), finding('You imply the mission', 'low')],
+        remaining: [finding('You skip the written done check', 'medium')],
+        selfDefeatingPatterns: [{
+          pattern: 'Just make it work',
+          intent: 'avoid specifying done',
+          explanation: 'Skips the acceptance gate.',
+          quotations: [],
+          locators: [{ sessionId: 'claude-session-a', messageIndexes: [1] }]
+        }],
+        strengths: [{
+          habit: 'Ask for a failing case',
+          explanation: 'Grounds the fix.',
+          quotations: [],
+          locators: [{ sessionId: 'claude-session-a', messageIndexes: [1] }]
+        }],
+        automationCandidates: [{
+          type: 'Skill',
+          name: 'parser-regression-gate',
+          frequency: 'recurring',
+          trigger: 'parser fix request',
+          inputs: ['failing case'],
+          outputs: ['green tests'],
+          rationale: 'Repeats every session.',
+          overAutomationRisk: 'May hide novel failures.'
+        }],
+        highestLeverageChange: { change: 'Name the failing case first', rationale: 'Prevents rework.' }
+      }
+    }
+  };
+  const report = summarizeSessions([session()], { semantic: semantic(), extensions });
+  const html = renderHtml(report);
+  assert.match(html, /Three hard truths/);
+  assert.match(html, /One highest-leverage change/);
+  assert.ok(html.indexOf('Three hard truths') > html.indexOf('The parser blinked first'));
+  const result = compareParityReports(report, report, { candidateHtml: html });
+  assert.equal(result.acceptance.structuralParity, true, JSON.stringify(result.structural));
+  assert.equal(result.acceptance.deterministicCorrectness, true);
+  assert.ok(result.excludedFromBaseline.htmlHeadings.includes('Three hard truths'));
+});
+
+test('partial source coverage plus incomplete audit still yields a usable Claude baseline', () => {
+  const extensions = {
+    userAudit: {
+      status: 'incomplete',
+      protocolVersion: 'user-audit/v1',
+      failure: { reason: 'analyzer_failure' },
+      sessions: {},
+      aggregate: null
+    }
+  };
+  const report = summarizeSessions([session()], {
+    sourcesScanned: [{ source: 'claude', coverage: 'partial', filesFound: 4, filesSelected: 2, filesLimited: 2 }],
+    semantic: semantic(),
+    extensions
+  });
+  assert.equal(report.parity.structuralStatus, 'complete');
+  assert.equal(report.parity.dataStatus, 'partial');
+  assert.equal(report.coverage.extensionFailures[0].extension, 'userAudit');
+  const html = renderHtml(report);
+  assert.match(html, /At a Glance/);
+  assert.match(html, /The parser blinked first/);
+  assert.match(html, /Three hard truths/);
+  assert.match(html, /User audit extension coverage is incomplete/);
+  assert.match(html, /complete structure · partial data coverage/);
+  assert.equal(compareParityReports(report, report, { candidateHtml: html }).acceptance.structuralParity, true);
+});
+
 test('HTML omits missing semantic sections while retaining deterministic charts and the fixed TOC', () => {
   const html = renderHtml(summarizeSessions([session()]));
 

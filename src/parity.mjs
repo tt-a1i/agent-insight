@@ -22,6 +22,18 @@ const SECTION_FIELDS = {
   at_a_glance: ['whatsWorking', 'whatsHindering', 'quickWins', 'ambitiousWorkflows']
 };
 
+/** Agent Insight transparent-exceed / audit extension headings. Excluded from Claude baseline HTML order scoring when they form a trailing suffix. */
+const EXTENSION_HTML_HEADINGS = new Set([
+  'Three hard truths',
+  'All findings',
+  'Habits that undercut you',
+  'Habits worth keeping',
+  'Automation candidates',
+  'One highest-leverage change',
+  'Evidence index',
+  'Read coverage'
+]);
+
 function hasOwn(object, key) {
   return object !== null && typeof object === 'object' && Object.prototype.hasOwnProperty.call(object, key);
 }
@@ -224,23 +236,12 @@ function htmlContractFailures(html, candidate) {
     else previous = node.start;
   }
   const actualHeadings = headings.map(textContent);
-  const transparentTails = [
-    [],
-    ['Evidence index', 'Read coverage'],
-    ['Three hard truths', 'Evidence index', 'Read coverage'],
-    ['Three hard truths', 'All findings', 'Evidence index', 'Read coverage'],
-    [
-      'Three hard truths',
-      'All findings',
-      'Habits that undercut you',
-      'Habits worth keeping',
-      'Automation candidates',
-      'One highest-leverage change',
-      'Evidence index',
-      'Read coverage'
-    ]
-  ];
-  if (!transparentTails.some((tail) => isDeepStrictEqual(actualHeadings, [...expectedHeadings, ...tail]))) {
+  // Baseline Claude h2 order must match exactly; known extension / transparent-exceed
+  // headings may follow as a trailing suffix without affecting the baseline score.
+  let baselineEnd = actualHeadings.length;
+  while (baselineEnd > 0 && EXTENSION_HTML_HEADINGS.has(actualHeadings[baselineEnd - 1])) baselineEnd -= 1;
+  const baselineHeadings = actualHeadings.slice(0, baselineEnd);
+  if (!isDeepStrictEqual(baselineHeadings, expectedHeadings)) {
     failures.push('html.headings');
   }
 
@@ -253,6 +254,8 @@ function htmlContractFailures(html, candidate) {
 
 export function compareParityReports(reference, candidate, { candidateHtml, referenceFileHash, trustedReferenceFileHash } = {}) {
   if (!reference?.insights || !candidate?.insights) throw new Error('Parity comparison requires two Agent Insight report objects.');
+  // Baseline Claude contract only. Agent Insight `extensions.*` (user-audit and peers)
+  // are never required paths and never enter deterministic or blind-semantic scoring.
   const structuralPaths = [
     'parity.target', 'parity.dataStatus', 'insights', 'semantic.sections',
     ...DETERMINISTIC_FIELDS.map((field) => `insights.${field}`),
@@ -295,6 +298,10 @@ export function compareParityReports(reference, candidate, { candidateHtml, refe
     structural: { required: structuralTotal, present: structuralPresent, score: structuralScore, missing },
     deterministic: { compared: DETERMINISTIC_FIELDS.length, matched: DETERMINISTIC_FIELDS.length - mismatches.length, score: deterministicScore, mismatches },
     semantic: { evaluation: 'blind_review_required', tieOrBetterThreshold: 0.8, sections: [...AGGREGATE_TASKS] },
+    excludedFromBaseline: {
+      schemaPaths: ['extensions'],
+      htmlHeadings: [...EXTENSION_HTML_HEADINGS]
+    },
     acceptance: {
       structuralParity: structuralScore === 1,
       deterministicCorrectness: deterministicScore === 1,
@@ -381,4 +388,4 @@ export function evaluateBlindSemanticRatings(bundle, { seed = '' } = {}) {
   return { schema: 'agent-insight/blind-semantic-result-v1', tieOrBetter, total: results.length, rate, passed, acceptance, results };
 }
 
-export { DETERMINISTIC_FIELDS };
+export { DETERMINISTIC_FIELDS, EXTENSION_HTML_HEADINGS };

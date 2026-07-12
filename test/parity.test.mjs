@@ -142,11 +142,87 @@ test('structural parity rejects extra headings hidden alongside the expected str
   assert.ok(result.structural.missing.includes('html.headings'));
 });
 
+test('extensions schema and audit HTML headings are excluded from Claude baseline parity scoring', () => {
+  const withExtensions = report();
+  withExtensions.extensions = {
+    userAudit: {
+      status: 'complete',
+      protocolVersion: 'user-audit/v1',
+      aggregate: {
+        topThree: [{ pattern: 'Ship without a gate', severity: 'high', explanation: 'Done is undefined.', evidenceSessionIds: ['opaque-a'] }],
+        remaining: [],
+        selfDefeatingPatterns: [],
+        strengths: [],
+        automationCandidates: [],
+        highestLeverageChange: { change: 'Name the gate first', rationale: 'Stops rework.' }
+      }
+    }
+  };
+  const divergentExtensions = structuredClone(withExtensions);
+  divergentExtensions.extensions.userAudit.aggregate.highestLeverageChange.change = 'Totally different advice';
+
+  const extensionTail = `
+<section data-extension-section="user_audit"><h2>Three hard truths</h2></section>
+<section data-extension-section="user_audit_all"><h2>All findings</h2></section>
+<section data-extension-section="user_audit_self_defeating"><h2>Habits that undercut you</h2></section>
+<section data-extension-section="user_audit_strengths"><h2>Habits worth keeping</h2></section>
+<section data-extension-section="user_audit_automation"><h2>Automation candidates</h2></section>
+<section data-extension-section="user_audit_leverage"><h2>One highest-leverage change</h2></section>
+<section><h2>Evidence index</h2></section>
+<section><h2>Read coverage</h2></section>
+`;
+  const htmlWithExtensions = contractHtml.replace('</body></html>', `${extensionTail}</body></html>`);
+  const result = compareParityReports(report(), divergentExtensions, {
+    candidateHtml: htmlWithExtensions,
+    referenceFileHash: 'a'.repeat(64),
+    trustedReferenceFileHash: 'a'.repeat(64)
+  });
+  assert.equal(result.structural.score, 1, JSON.stringify(result.structural));
+  assert.equal(result.deterministic.score, 1);
+  assert.equal(result.acceptance.structuralParity, true);
+  assert.equal(result.acceptance.deterministicCorrectness, true);
+  assert.deepEqual(result.excludedFromBaseline.schemaPaths, ['extensions']);
+  assert.ok(result.excludedFromBaseline.htmlHeadings.includes('Three hard truths'));
+  assert.equal(result.semantic.sections.includes('userAudit'), false);
+  assert.equal(JSON.stringify(result).includes('Totally different advice'), false);
+
+  const interleaved = contractHtml.replace(
+    '<section><h2>What You Wanted</h2>',
+    '<section><h2>Three hard truths</h2></section><section><h2>What You Wanted</h2>'
+  );
+  const interleavedResult = compareParityReports(report(), withExtensions, { candidateHtml: interleaved });
+  assert.equal(interleavedResult.acceptance.structuralParity, false);
+  assert.ok(interleavedResult.structural.missing.includes('html.headings'));
+});
+
+test('incomplete audit extension HTML still passes baseline structural parity gates', () => {
+  const incomplete = report();
+  incomplete.extensions = {
+    userAudit: { status: 'incomplete', protocolVersion: 'user-audit/v1', failure: { reason: 'invalid_analyzer_response' }, sessions: {}, aggregate: null }
+  };
+  incomplete.parity.dataStatus = 'partial';
+  const incompleteTail = `
+<section data-extension-section="user_audit"><h2>Three hard truths</h2><div class="empty">User audit extension coverage is incomplete.</div></section>
+<section><h2>Evidence index</h2></section>
+<section><h2>Read coverage</h2></section>
+`;
+  const html = contractHtml.replace('</body></html>', `${incompleteTail}</body></html>`);
+  const result = compareParityReports(report(), incomplete, { candidateHtml: html });
+  assert.equal(result.acceptance.structuralParity, true, JSON.stringify(result.structural));
+  assert.equal(result.acceptance.deterministicCorrectness, true);
+});
+
 test('blind semantic bundle hides candidate identity and covers all eight sections', () => {
-  const bundle = createBlindSemanticBundle(report(), report(), { seed: 'fixed' });
+  const left = report();
+  left.extensions = { userAudit: { status: 'complete', aggregate: { topThree: [{ pattern: 'secret roast' }] } } };
+  const right = report();
+  right.extensions = { userAudit: { status: 'incomplete', failure: { reason: 'analyzer_failure' } } };
+  const bundle = createBlindSemanticBundle(left, right, { seed: 'fixed' });
   assert.equal(bundle.items.length, 8);
   assert.equal(JSON.stringify(bundle).includes('reference'), false);
   assert.equal(JSON.stringify(bundle).includes('candidate'), false);
+  assert.equal(JSON.stringify(bundle).includes('secret roast'), false);
+  assert.equal(JSON.stringify(bundle).includes('userAudit'), false);
   assert.ok(bundle.items.every((item) => item.A && item.B && item.section));
   assert.deepEqual(bundle.evidenceContext.sessions[0], {
     id: 'opaque-a', source: 'claude', date: '2026-07-01',
