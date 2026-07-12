@@ -20,6 +20,10 @@ test('authorship filter keeps genuine user text and strips machine markup', () =
     'Please keep the test focused.'
   );
   assert.equal(extractGenuineUserText('---\nname: demo\ndescription: A reusable skill\n---\n\n# SKILL.md\nDo the thing.'), null);
+  assert.equal(
+    extractGenuineUserText('<timestamp>Sunday, Jul 12, 2026, 4:00 PM (UTC+8)</timestamp>\n<user_query>\nFix the adapter\n</user_query>'),
+    '<user_query>\nFix the adapter\n</user_query>'
+  );
 });
 
 test('Claude semantic projection attributes only genuine user-authored messages', async () => {

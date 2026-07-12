@@ -27,7 +27,19 @@ function normaliseDate(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function firstDate(record) {
+function embeddedContentTimestamp(record) {
+  if (!isObject(record)) return null;
+  const payload = isObject(record.payload) ? record.payload : null;
+  const message = isObject(record.message) ? record.message : null;
+  const item = record.type === 'response_item' && payload ? payload : message ?? payload ?? record;
+  const text = contentText(isObject(item) ? item.content : null);
+  const match = typeof text === 'string' ? text.match(/<timestamp>\s*([^<]+?)\s*<\/timestamp>/i) : null;
+  return match ? normaliseDate(match[1].trim()) : null;
+}
+
+/** Prefer explicit JSON clocks; fall back to Cursor-style embedded <timestamp> tags. */
+export function recordTimestamp(record) {
+  if (!isObject(record)) return null;
   const candidates = [
     record.timestamp,
     record.createdAt,
@@ -35,13 +47,18 @@ function firstDate(record) {
     record.time,
     record.payload?.timestamp,
     record.payload?.createdAt,
-    record.message?.timestamp
+    record.message?.timestamp,
+    embeddedContentTimestamp(record)
   ];
   for (const candidate of candidates) {
     const date = normaliseDate(candidate);
     if (date) return date;
   }
   return null;
+}
+
+function firstDate(record) {
+  return recordTimestamp(record);
 }
 
 function firstString(...candidates) {
