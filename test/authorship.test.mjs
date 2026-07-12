@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { FacetCache } from '../src/cache.mjs';
 import { extractGenuineUserText } from '../src/authorship.mjs';
 import { nextSemanticTask, prepareSemanticRun } from '../src/semantic-run.mjs';
 import { extractAnalysisInput } from '../src/transcript.mjs';
@@ -41,7 +40,6 @@ test('Claude semantic projection attributes only genuine user-authored messages'
 test('public semantic next exposes authorship-filtered transcript only', async () => {
   const home = await mkdtemp(join(tmpdir(), 'agent-insight-authorship-'));
   const runsRoot = join(home, 'runs');
-  const cache = new FacetCache(join(home, 'facets'));
   const mixed = join(home, 'mixed.jsonl');
   const records = [
     { type: 'event_msg', timestamp: '2026-07-03T09:00:00.000Z', payload: { type: 'user_message', message: 'Duplicate telemetry Investigate failure' } },
@@ -57,12 +55,11 @@ test('public semantic next exposes authorship-filtered transcript only', async (
 
   const prepared = await prepareSemanticRun({
     runsRoot,
-    cache,
     request: { host: 'codex', sources: ['codex'], scope: 'current', days: 30 },
     candidates: [{ source: 'codex', locator: { kind: 'file', path: mixed } }],
     analyzer: { host: 'codex', model: 'test-model' }
   });
-  const task = await nextSemanticTask({ runsRoot, cache, runId: prepared.id });
+  const task = await nextSemanticTask({ runsRoot, runId: prepared.id });
   assert.equal(task.kind, 'session_facet');
   const userTexts = task.input.messages.filter((message) => message.role === 'user').map((message) => message.text);
   assert.deepEqual(userTexts, [

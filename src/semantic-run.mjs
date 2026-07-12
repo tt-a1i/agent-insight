@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
-import { ANALYSIS_PROTOCOL_VERSION, createSessionChunkRequest, createSessionFacetFromChunksRequest, createSessionFacetRequest, splitSessionMessages, validateCachedSessionFacet, validateSessionChunkResult, validateSessionFacet } from './protocol.mjs';
+import { ANALYSIS_PROTOCOL_VERSION, createSessionChunkRequest, createSessionFacetFromChunksRequest, createSessionFacetRequest, splitSessionMessages, validateSessionChunkResult, validateSessionFacet } from './protocol.mjs';
 import { AGGREGATE_TASKS, createAggregateChunkRequest, createAggregateRequest, createAtAGlanceChunkRequest, splitAggregateSections, splitAggregateSessions, validateAggregateChunkResult, validateAggregateResult } from './aggregate-protocol.mjs';
 import { extractAnalysisInput } from './transcript.mjs';
 import { parseSessionFile } from './parse.mjs';
@@ -55,17 +55,6 @@ async function loadDeterministicSession(locator, source) {
   if (locator.kind === 'file') return parseSessionFile(locator.path, source, locator);
   if (locator.kind === 'opencode') return (await exportOpenCodeSession(locator)).session;
   throw new Error('Unsupported semantic session locator.');
-}
-
-function cacheKey(session, analyzer) {
-  return {
-    source: session.source,
-    opaqueSessionId: session.id,
-    contentHash: session.contentHash,
-    analyzerHost: analyzer.host,
-    analyzerModel: analyzer.model,
-    promptVersion: PROMPT_VERSION
-  };
 }
 
 function freezeDeterministicMetrics(session, input) {
@@ -187,6 +176,27 @@ async function writeManifest(runsRoot, manifest) {
   return { directory, manifestPath: file };
 }
 
+async function cleanTransientRunFiles(runsRoot, runId) {
+  const directory = runDirectory(runsRoot, runId);
+  let names;
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  await Promise.all(names.map(async (name) => {
+    const transient = name === 'submission.json'
+      || /^submission-.+\.json$/.test(name)
+      || name.endsWith('.tmp')
+      || /projection/i.test(name);
+    if (!transient) return;
+    await unlink(join(directory, name)).catch((error) => {
+      if (error?.code !== 'ENOENT') throw error;
+    });
+  }));
+}
+
 async function exposeTask(runsRoot, run, task, _messages = null) {
   if (run.activeTask && run.activeTask.id !== task.id) throw new Error(`Semantic task ${run.activeTask.id} is still awaiting ingest or fail.`);
   if (!run.activeTask) {
@@ -298,14 +308,11 @@ export async function semanticSubmissionForTask({ runsRoot, runId, taskId }) {
   return taskSubmissionPath(runsRoot, runId, id);
 }
 
-export async function prepareSemanticRun({ runsRoot, cache, request, candidates, analyzer, diagnostics = [] }) {
+export async function prepareSemanticRun({ runsRoot, request, candidates, analyzer, diagnostics = [] }) {
   const id = randomUUID();
   const sessions = [];
   const preparationFailures = [];
   const runDiagnostics = structuredClone(diagnostics);
-  const normalizedModel = typeof analyzer.model === 'string' ? analyzer.model.trim() : '';
-  const cacheEnabled = normalizedModel !== '' && normalizedModel.toLowerCase() !== 'unknown';
-  const cacheStats = { enabled: cacheEnabled, hits: 0, misses: 0, invalid: 0, stale: 0, bypassedUnknownModel: 0, writeFailures: 0 };
   for (const candidate of candidates) {
     const locator = normalizedLocator(candidate.locator);
     let input;
@@ -354,26 +361,6 @@ export async function prepareSemanticRun({ runsRoot, cache, request, candidates,
     if (exclusion) {
       session.status = 'excluded';
       session.eligibilityReason = exclusion;
-    } else if (!cacheEnabled) {
-      cacheStats.bypassedUnknownModel += 1;
-    } else {
-      const key = cacheKey(session, analyzer);
-      const lookup = await cache.lookup(key);
-      if (lookup.status === 'miss') cacheStats.misses += 1;
-      else if (lookup.status === 'stale') cacheStats.stale += lookup.removed ?? 1;
-      else if (lookup.status === 'invalid') cacheStats.invalid += 1;
-      else {
-        try {
-          const cached = validateCachedSessionFacet(lookup.facet, input);
-          cacheStats.hits += 1;
-          session.status = isWarmupFacet(cached) ? 'excluded' : 'complete';
-          session.eligibilityReason = isWarmupFacet(cached) ? 'warmup_minimal' : null;
-          session.facet = cached;
-        } catch {
-          cacheStats.invalid += 1;
-          await cache.remove(key);
-        }
-      }
     }
     sessions.push(session);
   }
@@ -391,7 +378,6 @@ export async function prepareSemanticRun({ runsRoot, cache, request, candidates,
     preparationFailures,
     failures: preparationFailures.map((failure) => ({ taskId: null, reason: failure.reason, source: failure.source, at: new Date().toISOString() })),
     eligibility: eligibilitySummary(sessions, preparationFailures),
-    cache: cacheStats,
     protocolVersion: ANALYSIS_PROTOCOL_VERSION
   };
   if (preparationFailures.length && !sessions.some((session) => session.status === 'pending' || session.status === 'complete')) {
@@ -402,7 +388,7 @@ export async function prepareSemanticRun({ runsRoot, cache, request, candidates,
   return { id, ...paths };
 }
 
-export async function nextSemanticTask({ runsRoot, cache: _cache, runId }) {
+export async function nextSemanticTask({ runsRoot, runId }) {
   const run = await getSemanticRun({ runsRoot, runId });
   if (run.aggregateBatch?.ids?.length) {
     const context = aggregateContext(run);
@@ -512,7 +498,7 @@ export async function nextSemanticTask({ runsRoot, cache: _cache, runId }) {
   }
 }
 
-export async function ingestSemanticResult({ runsRoot, cache, runId, taskId, result }) {
+export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) {
   const run = await getSemanticRun({ runsRoot, runId });
   const batched = run.aggregateBatch?.ids?.includes(String(taskId));
   if (!batched && run.activeTask?.id !== String(taskId)) throw new Error('Semantic result does not match the task most recently exposed by semantic next.');
@@ -603,13 +589,6 @@ export async function ingestSemanticResult({ runsRoot, cache, runId, taskId, res
     messages: supportedIndexes.map((index) => ({ index }))
   };
   const facet = validateSessionFacet(result, frozenInput);
-  if (run.cache?.enabled) {
-    try {
-      await cache.put(cacheKey(session, run.analyzer), facet);
-    } catch {
-      run.cache.writeFailures += 1;
-    }
-  }
   session.status = isWarmupFacet(facet) ? 'excluded' : 'complete';
   session.eligibilityReason = isWarmupFacet(facet) ? 'warmup_minimal' : null;
   session.facet = facet;
@@ -665,7 +644,6 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
   const sessions = eligibleSessions.map((session) => session.metrics);
   const semantic = {
     analyzer: run.analyzer,
-    cache: run.cache,
     failures: run.failures,
     sectionFailures: run.sectionFailures,
     sessions: eligibleSessions.map(({ id, date, source, sessionId, projectPath, projectLabel, facet }) => ({
@@ -691,6 +669,7 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
   run.completedAt = new Date().toISOString();
   run.report = { timestampedHtml: files.timestampedHtml, html: files.html, json: files.json, markdown: files.markdown };
   await writeManifest(runsRoot, run);
+  await cleanTransientRunFiles(runsRoot, runId);
   return { report, files };
 }
 

@@ -335,7 +335,6 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
       sourcesScanned,
       projectFilter,
       eligibility,
-      cache: semantic?.cache ?? null,
       semanticFailures,
       sectionFailures: semantic?.sectionFailures ?? {}
     },

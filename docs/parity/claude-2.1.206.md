@@ -703,21 +703,23 @@ The normal command writes no JSON export, although the binary contains an
 internal export helper. The HTML links Google Fonts, so opening it can make a
 font request even though the report file is local.
 
-### Agent Insight cache
+### Agent Insight run checkpoints
 
-**[Transparent exceed]** the semantic cache:
+**[Transparent exceed]** Agent Insight does not retain a reusable cross-run
+facet cache. Each new report invocation requests fresh semantic analysis for
+the selected corpus and model.
 
-- contains validated structured facets with concrete evidence labels (session
-  identifiers, project paths, optional quotations) while still excluding complete
-  transcript copies, tool arguments, and tool results;
-- uses directory mode `0700` and file mode `0600`;
-- keys entries by source session identity and a content hash;
-- invalidates on protocol version, prompt version, content hash, and analyzer
-  host/model when known;
-- retains completed facets after interruption so a later run can resume;
-- supports `agent-insight cache status`, `cache clear`, and model-bound
-  `cache rebuild --host <host> --model <exact-model-id>`;
-- reports hit, miss, stale, invalid, and failed counts.
+Within one active run, the semantic manifest:
+
+- checkpoints completed session facets and aggregate sections so they are not
+  redone after interruption;
+- freezes the active task so `semantic next` can resume it;
+- uses directory mode `0700` and file mode `0600` for run state;
+- cleans transient submission and projection files on finalize while retaining
+  `manifest.json` and the final HTML/MD/JSON report artifacts.
+
+Analyzer failures remain explicit: an active task that cannot complete yields a
+partial or failed report state rather than silent healthy coverage.
 
 Agent Insight writes to its own data root rather than overwriting Claude's
 native `usage-data`. Its parity renderer must still match the reference HTML
@@ -798,7 +800,7 @@ Tests observe behavior only through these boundaries:
 3. versioned per-session analyzer input/output protocol;
 4. aggregate semantic section protocol;
 5. report JSON, Markdown, and HTML contracts;
-6. semantic cache commands and incremental behavior;
+6. run checkpoint resume, finalize cleanup, and partial failure behavior;
 7. Claude parity harness comparing reference and candidate reports.
 
 The required parity fixture set includes:

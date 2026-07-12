@@ -143,7 +143,7 @@ the timestamped HTML report and also writes the stable `report.html`,
 by default. Keep the run ID after an error: the same run can be resumed rather
 than guessed, skipped, or silently re-analyzed by a different model.
 
-## Derived-facet cache and evidence policy
+## Run checkpoints and evidence policy
 
 Semantic analysis needs transcript text transiently so the selected host model
 can reason about goals, outcomes, friction, and evidence. That text is
@@ -152,27 +152,13 @@ representative user quotations, absolute project paths, agent identity, dates,
 and session identifiers as concrete evidence labels. Complete transcripts and
 tool payloads are not copied into the report.
 
-Agent Insight caches validated **derived facets** under
-`~/.agent-insight/cache/facets/`. A cache entry is keyed by opaque session
-identity, transcript content hash, analyzer host/model, and protocol version.
-Cache and report files are private (`0600`) in private directories (`0700`).
-Cache hit, miss, invalid, stale, bypass, and write-failure counts are
-recorded in the run and final report. Content-privacy filters that blocked
-verbatim overlap, absolute paths, or credential-shaped prose have been
-removed; filesystem and parser safety controls remain.
-
-```bash
-agent-insight cache status
-agent-insight cache clear
-agent-insight cache rebuild --host codex --model <exact-current-model-id> --source codex --days 30
-```
-
-`cache rebuild` clears only facets for the named host/model pair and prepares
-a new resumable semantic run; complete it with the normal
-`semantic next → ingest → finalize` loop.
-When a host cannot expose its exact model ID, it passes `unknown` and Agent
-Insight disables reusable caching for that run rather than risk cross-model
-reuse.
+Independent report invocations always request fresh semantic analysis, even
+when the corpus and model are unchanged. Within one active run, progress is
+checkpointed under `~/.agent-insight/runs/<run-id>/`: completed tasks are not
+redone, and an interrupted active task can be resumed with `semantic next`.
+Run and report files are private (`0600`) in private directories (`0700`).
+`finalize` removes transient submission files under the run directory while
+keeping `manifest.json` and the final HTML/MD/JSON artifacts.
 
 Large sessions and aggregate evidence are processed through bounded derived
 chunks (25,000-character session chunks; direct semantic prompts switch to
@@ -283,7 +269,7 @@ node bin/agent-insight.mjs report --source codex,claude --max-sessions 5 --outpu
 ```
 
 The suite includes transcript parsing, source-adapter boundaries, interaction
-selection, semantic protocol validation, resumable runs, derived-facet caching,
+selection, semantic protocol validation, resumable run checkpoints,
 evidence-bearing report rendering, and host integration behavior.
 
 ## References

@@ -112,20 +112,17 @@ test('complete section structure never hides partial transcript coverage', () =>
   assert.doesNotMatch(renderHtml(report), />complete parity coverage</);
 });
 
-test('semantic cache behavior is visible in report coverage', () => {
+test('semantic coverage notes omit reusable cache metrics', () => {
   const report = summarizeSessions([], {
     semantic: {
       analyzer: { host: 'codex', model: 'gpt-5' },
-      cache: { enabled: true, hits: 2, misses: 1, invalid: 1, stale: 0, writeFailures: 0 },
       sessions: [],
       sections: {}
     }
   });
-  assert.deepEqual(report.coverage.cache, {
-    enabled: true, hits: 2, misses: 1, invalid: 1, stale: 0, writeFailures: 0
-  });
-  assert.match(renderMarkdown(report), /Derived-facet cache: 2 hits, 1 miss, 1 invalid/);
-  assert.match(renderHtml(report), /Derived-facet cache: 2 hits, 1 miss, 1 invalid/);
+  assert.equal(report.coverage.cache, undefined);
+  assert.doesNotMatch(renderMarkdown(report), /Derived-facet cache|reusable cache|semantic cache/i);
+  assert.doesNotMatch(renderHtml(report), /Derived-facet cache|reusable cache|semantic cache/i);
 });
 
 test('counts Multi-Clauding only when another session is bracketed by one session', () => {

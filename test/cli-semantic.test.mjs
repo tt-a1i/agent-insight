@@ -69,13 +69,6 @@ test('prepare and semantic commands form a host-mediated analysis loop', async (
   assert.ok(next.tasks.some((task) => task.id === 'aggregate:project_areas'));
 });
 
-test('cache CLI reports and clears derived facet cache entries', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'agent-insight-cli-cache-'));
-  assert.deepEqual(await main(['cache', 'status'], { home, quiet: true }), { entries: 0, bytes: 0, valid: 0, invalid: 0 });
-  assert.equal(await main(['cache', 'clear'], { home, quiet: true }), 0);
-  await assert.rejects(main(['cache', 'rebuild'], { home, quiet: true }), /requires --host.*--model/);
-});
-
 test('semantic commands reject a host or model different from the prepared owner', async () => {
   const home = await mkdtemp(join(tmpdir(), 'agent-insight-cli-owner-'));
   const project = join(home, '.claude', 'projects', 'project-a');

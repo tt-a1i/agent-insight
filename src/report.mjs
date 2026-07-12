@@ -37,13 +37,6 @@ function eligibilityNote(report) {
   return `${number(eligibility.eligible)} eligible, ${number(eligibility.excluded)} excluded, ${number(eligibility.scanned)} scanned${reasons ? ` (${reasons})` : ''}.`;
 }
 
-function cacheNote(report) {
-  const cache = report.coverage?.cache;
-  if (!cache) return 'No semantic cache was used for this report.';
-  if (!cache.enabled) return `${number(cache.bypassedUnknownModel ?? 0)} eligible session${cache.bypassedUnknownModel === 1 ? '' : 's'} bypassed reusable cache because the exact model ID was unavailable.`;
-  return `Derived-facet cache: ${number(cache.hits ?? 0)} hit${cache.hits === 1 ? '' : 's'}, ${number(cache.misses ?? 0)} miss${cache.misses === 1 ? '' : 'es'}, ${number(cache.invalid ?? 0)} invalid, ${number(cache.stale ?? 0)} stale, ${number(cache.writeFailures ?? 0)} write failure${cache.writeFailures === 1 ? '' : 's'}.`;
-}
-
 function semanticFailureNote(report) {
   const failures = report.coverage?.semanticFailures ?? [];
   if (!failures.length) return 'No semantic analyzer failures were recorded.';
@@ -85,7 +78,7 @@ export function renderMarkdown(report) {
   ];
   const list = (items) => items.map((item) => `- **${item.title}:** ${item.detail}`).join('\n');
   const ranked = (items) => items.length ? items.map((item) => `- ${escapeMarkdown(item.name)}: ${number(item.count)}`).join('\n') : '- No data';
-  return `# Agent Insight\n\n${range} · ${requestedWindowLabel(report)}\n\n## At a glance\n\n${metrics.map(([label, value]) => `- **${label}:** ${number(value)}`).join('\n')}\n\n## Agent coverage\n\n${sourceTable(report)}\n\n## Read coverage\n\n${projectFilterNote(report)} ${cacheNote(report)} ${semanticFailureNote(report)}\n\n${coverageTable(report)}\n\n## Project areas\n\n${ranked(report.projects)}\n\n## Top tools\n\n${ranked(report.topTools)}\n\n## Providers\n\n${ranked(report.providers)}\n\n## Models\n\n${ranked(report.models)}\n\n## Evidence-backed observations\n\n${list(report.observations)}\n\n## Next moves\n\n${list(report.recommendations)}\n\n## Evidence policy\n\n${report.privacy.note}\n`;
+  return `# Agent Insight\n\n${range} · ${requestedWindowLabel(report)}\n\n## At a glance\n\n${metrics.map(([label, value]) => `- **${label}:** ${number(value)}`).join('\n')}\n\n## Agent coverage\n\n${sourceTable(report)}\n\n## Read coverage\n\n${projectFilterNote(report)} ${semanticFailureNote(report)}\n\n${coverageTable(report)}\n\n## Project areas\n\n${ranked(report.projects)}\n\n## Top tools\n\n${ranked(report.topTools)}\n\n## Providers\n\n${ranked(report.providers)}\n\n## Models\n\n${ranked(report.models)}\n\n## Evidence-backed observations\n\n${list(report.observations)}\n\n## Next moves\n\n${list(report.recommendations)}\n\n## Evidence policy\n\n${report.privacy.note}\n`;
 }
 
 export function renderAgentPrompt(report) {
@@ -251,7 +244,7 @@ export function renderHtml(report) {
   html = replaceSection(html, '<section><h2>What Helped Most</h2>', '<section id="where-things-go-wrong">', helped);
   const evidenceRows = (report.semantic?.sessions ?? []).map((session) => `<tr><td>${escapeHtml(session.sessionId ?? session.id)}</td><td>${escapeHtml(session.source)}</td><td>${escapeHtml(session.date ?? 'unknown')}</td><td>${escapeHtml(session.projectPath || session.projectLabel || '—')}</td></tr>`).join('');
   const evidenceIndex = `<section><h2>Evidence index</h2><div class="table-wrap"><table><thead><tr><th>Session</th><th>Agent</th><th>Date</th><th>Project</th></tr></thead><tbody>${evidenceRows || '<tr><td colspan="4">No semantic evidence sessions.</td></tr>'}</tbody></table></div>${renderEvidenceQuotations(report)}</section>`;
-  html = html.replace('<section><h2>Read coverage</h2>', `${evidenceIndex}<section><h2>Read coverage</h2><p class="muted">${escapeHtml(cacheNote(report))} ${escapeHtml(semanticFailureNote(report))}</p>`);
+  html = html.replace('<section><h2>Read coverage</h2>', `${evidenceIndex}<section><h2>Read coverage</h2><p class="muted">${escapeHtml(semanticFailureNote(report))}</p>`);
   const headerClose = html.indexOf('</header>');
   const headerEnd = headerClose < 0 ? -1 : headerClose + '</header>'.length;
   const tocStart = html.indexOf('<nav class="toc"', headerEnd);

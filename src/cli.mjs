@@ -10,11 +10,10 @@ import { installIntegration, AGENTS } from './integrations.mjs';
 import { parseSessionFile } from './parse.mjs';
 import { writeReport } from './report.mjs';
 import { HOSTS, resolveInsightRequest } from './interaction.mjs';
-import { FacetCache } from './cache.mjs';
 import { failSemanticTask, finalizeSemanticRun, getSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun, semanticSubmissionForTask } from './semantic-run.mjs';
 import { compareParityReports, createBlindSemanticBundle, evaluateBlindSemanticRatings } from './parity.mjs';
 
-const HELP = `agent-insight — local-first cross-agent session insights\n\nUsage:\n  agent-insight insights --host claude|codex|cursor|opencode|pi\n  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD]\n  agent-insight semantic next|ingest|finalize --run <run-id> [--task <task-id>] [--output <directory>]\n  agent-insight cache status|clear\n  agent-insight cache rebuild --host <host> --model <exact-model-id> [--source <agents>] [--days 30|--all]\n  agent-insight parity compare --reference <report.json> --candidate <report.json> [--output <comparison.json>] [--blind-output <review.json>]\n  agent-insight parity evaluate --review <rated-review.json> [--seed <secret>] [--output <result.json>]\n  agent-insight doctor [--source auto|codex,claude,...] [--json]\n  agent-insight report [--source auto|codex,claude,...] [--days 30|--all]\n                       [--project <path>] [--input <export-file>] [--output <directory>]\n                       [--include-subagents] [--max-file-mb 16] [--max-sessions 100]\n                       [--max-discovery-files 10000]\n  agent-insight install --agent claude|codex|cursor|opencode|pi [--scope project|user] [--force]\n  agent-insight import --source groq|generic --from <export-file>\n\nInsights uses the current host model for semantic analysis. Reports may include representative user quotations, project paths, agent identity, dates, and session identifiers. Complete transcripts and tool payloads are not copied into the report.\n`;
+const HELP = `agent-insight — local-first cross-agent session insights\n\nUsage:\n  agent-insight insights --host claude|codex|cursor|opencode|pi\n  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD]\n  agent-insight semantic next|ingest|finalize --run <run-id> [--task <task-id>] [--output <directory>]\n  agent-insight parity compare --reference <report.json> --candidate <report.json> [--output <comparison.json>] [--blind-output <review.json>]\n  agent-insight parity evaluate --review <rated-review.json> [--seed <secret>] [--output <result.json>]\n  agent-insight doctor [--source auto|codex,claude,...] [--json]\n  agent-insight report [--source auto|codex,claude,...] [--days 30|--all]\n                       [--project <path>] [--input <export-file>] [--output <directory>]\n                       [--include-subagents] [--max-file-mb 16] [--max-sessions 100]\n                       [--max-discovery-files 10000]\n  agent-insight install --agent claude|codex|cursor|opencode|pi [--scope project|user] [--force]\n  agent-insight import --source groq|generic --from <export-file>\n\nInsights uses the current host model for semantic analysis. Reports may include representative user quotations, project paths, agent identity, dates, and session identifiers. Complete transcripts and tool payloads are not copied into the report.\n`;
 
 const PUBLIC_HELP = HELP
   .replace('semantic next|ingest|finalize --run <run-id> [--task <task-id>] [--output <directory>]', 'semantic next|ingest|fail|finalize --run <run-id> --host <host> --model <exact-model-id-or-unknown> [--task <task-id>] [--reason <failure-code>] [--output <directory>]')
@@ -116,7 +115,6 @@ async function prepareFromRequest(request, flags, context) {
   const base = join(context.home, '.agent-insight');
   const run = await prepareSemanticRun({
     runsRoot: join(base, 'runs'),
-    cache: new FacetCache(join(base, 'cache', 'facets')),
     request,
     candidates: collected.analysisCandidates,
     analyzer: { host: request.host, model: typeof flags.model === 'string' ? flags.model.trim() : 'unknown' },
@@ -185,8 +183,7 @@ async function runPrepare(flags, context) {
 }
 
 function semanticPaths(context) {
-  const base = join(context.home, '.agent-insight');
-  return { runsRoot: join(base, 'runs'), cache: new FacetCache(join(base, 'cache', 'facets')) };
+  return { runsRoot: join(context.home, '.agent-insight', 'runs') };
 }
 
 async function runSemantic(flags, context) {
@@ -237,30 +234,6 @@ async function runSemantic(flags, context) {
     console.log('\nWant to dig into any section or try one of the suggestions?');
   }
   return value;
-}
-
-async function runCache(flags, context) {
-  const action = flags._[0] ?? 'status';
-  const cache = semanticPaths(context).cache;
-  if (action === 'status') {
-    const value = await cache.status();
-    if (!context.quiet) console.log(JSON.stringify(value, null, 2));
-    return value;
-  }
-  if (action === 'clear') {
-    const value = await cache.clear();
-    if (!context.quiet) console.log(`${value} cached facets removed.`);
-    return value;
-  }
-  if (action === 'rebuild') {
-    if (typeof flags.host !== 'string' || typeof flags.model !== 'string' || flags.model === 'unknown') {
-      throw new Error('cache rebuild requires --host <host> and --model <exact-model-id>; it creates a semantic rebuild run.');
-    }
-    const removed = await cache.clearForAnalyzer(flags.host, flags.model);
-    const prepared = await runPrepare(flags, context);
-    return { removed, ...prepared };
-  }
-  throw new Error('cache requires status, clear, or rebuild.');
 }
 
 async function writePrivateJson(path, value) {
@@ -374,7 +347,6 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   if (command === 'insights') return runInsights(flags, context);
   if (command === 'prepare') return runPrepare(flags, context);
   if (command === 'semantic') return runSemantic(flags, context);
-  if (command === 'cache') return runCache(flags, context);
   if (command === 'parity') return runParity(flags, context);
   if (command === 'report') return runReport(flags, context);
   if (command === 'install') {

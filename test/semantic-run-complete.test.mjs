@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { FacetCache } from '../src/cache.mjs';
 import { finalizeSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun } from '../src/semantic-run.mjs';
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url);
@@ -44,17 +43,15 @@ function aggregateResult(task, id) {
 test('a semantic run progresses through every section and finalizes a timestamped report', async () => {
   const home = await mkdtemp(join(tmpdir(), 'agent-insight-complete-'));
   const runsRoot = join(home, 'runs');
-  const cache = new FacetCache(join(home, 'facets'));
   const prepared = await prepareSemanticRun({
     runsRoot,
-    cache,
     request: { host: 'claude', sources: ['claude'], scope: 'current', days: 30, start: null, end: null, semantic: true, fast: false },
     candidates: [{ source: 'claude', locator: { kind: 'file', path: fixture('claude-parity.jsonl') } }],
     analyzer: { host: 'claude', model: 'current' },
     diagnostics: [{ source: 'claude', coverage: 'available', filesFound: 1, filesSelected: 1, filesLimited: 0, filesPartial: 0, filesSkipped: 0 }]
   });
-  const facetTask = await nextSemanticTask({ runsRoot, cache, runId: prepared.id });
-  await ingestSemanticResult({ runsRoot, cache, runId: prepared.id, taskId: facetTask.id, result: {
+  const facetTask = await nextSemanticTask({ runsRoot, runId: prepared.id });
+  await ingestSemanticResult({ runsRoot, runId: prepared.id, taskId: facetTask.id, result: {
     underlying_goal: 'Fix a parser', goal_categories: { fix_bug: 1 }, outcome: 'fully_achieved', user_satisfaction_counts: { satisfied: 1 },
     claude_helpfulness: 'very_helpful', session_type: 'single_task', friction_counts: {}, friction_detail: '', primary_success: 'good_debugging',
     brief_summary: 'Parser fixed.', evidence: [{
@@ -65,15 +62,15 @@ test('a semantic run progresses through every section and finalizes a timestampe
   } });
   const id = facetTask.input.opaqueId;
   while (true) {
-    const task = await nextSemanticTask({ runsRoot, cache, runId: prepared.id });
+    const task = await nextSemanticTask({ runsRoot, runId: prepared.id });
     if (task.kind === 'complete') break;
     if (task.kind === 'aggregate_batch') {
       assert.equal(task.tasks.length, 7);
-      for (const item of task.tasks) await ingestSemanticResult({ runsRoot, cache, runId: prepared.id, taskId: item.id, result: aggregateResult(item.section, id) });
+      for (const item of task.tasks) await ingestSemanticResult({ runsRoot, runId: prepared.id, taskId: item.id, result: aggregateResult(item.section, id) });
       continue;
     }
     assert.equal(task.kind, 'aggregate');
-    await ingestSemanticResult({ runsRoot, cache, runId: prepared.id, taskId: task.id, result: aggregateResult(task.section, id) });
+    await ingestSemanticResult({ runsRoot, runId: prepared.id, taskId: task.id, result: aggregateResult(task.section, id) });
   }
 
   const final = await finalizeSemanticRun({ runsRoot, runId: prepared.id, outputDirectory: join(home, 'usage-data') });
