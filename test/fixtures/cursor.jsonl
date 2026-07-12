@@ -1,0 +1,4 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Jul 12, 2026, 4:00 PM (UTC+8)</timestamp>\n<user_query>\nFix the Cursor adapter\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I will inspect the transcript parser."},{"type":"tool_use","name":"Read","input":{"path":"/work/insight/src/parse.mjs"}}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Jul 12, 2026, 4:12 PM (UTC+8)</timestamp>\n<user_query>\nAlso cover duration eligibility\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Duration now comes from embedded timestamps."}]}}

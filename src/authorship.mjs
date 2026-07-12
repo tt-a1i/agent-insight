@@ -14,7 +14,8 @@ const MACHINE_ONLY_TAGS = [
   'local-command-caveat',
   'local-command',
   'environment_context',
-  'env_context'
+  'env_context',
+  'timestamp'
 ];
 
 const MACHINE_TAG_RE = new RegExp(`<(${MACHINE_ONLY_TAGS.join('|')})(?:\\s[^>]*)?>[\\s\\S]*?<\\/\\1>`, 'gi');

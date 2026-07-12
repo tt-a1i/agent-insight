@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { basename, extname } from 'node:path';
-import { claudeTopologyNode, selectClaudeLeafUuids } from './parse.mjs';
+import { claudeTopologyNode, recordTimestamp, selectClaudeLeafUuids } from './parse.mjs';
 import { authorshipCoverageNote, classifyAnalysisRole } from './authorship.mjs';
 
 function firstString(...values) {
@@ -42,7 +42,7 @@ function observeRecord(state, record) {
   const item = record.type === 'response_item' && payload ? payload : message ?? payload ?? record;
   state.sessionId ??= firstString(record.sessionId, record.session_id, payload?.sessionId, payload?.session_id, record.type === 'session_meta' ? payload?.id : null);
   state.project ??= firstString(record.cwd, record.projectPath, record.project_path, record.workspace, payload?.cwd, item.cwd);
-  const timestamp = firstString(record.timestamp, payload?.timestamp, message?.timestamp);
+  const timestamp = recordTimestamp(record);
   if (timestamp && !Number.isNaN(Date.parse(timestamp))) {
     const value = Date.parse(timestamp);
     state.firstTimestamp = state.firstTimestamp === null ? value : Math.min(state.firstTimestamp, value);

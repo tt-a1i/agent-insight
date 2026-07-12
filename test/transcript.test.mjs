@@ -60,3 +60,13 @@ test('Claude semantic projection uses the same winning leaf as deterministic met
   assert.doesNotMatch(text, /Losing branch/);
   assert.equal(input.userMessageCount, 3);
 });
+
+test('Cursor semantic input reads embedded <timestamp> tags for duration eligibility', async () => {
+  const input = await extractAnalysisInput(fixture('cursor.jsonl'), 'cursor');
+  assert.equal(input.source, 'cursor');
+  assert.equal(input.date, '2026-07-12');
+  assert.equal(input.userMessageCount, 2);
+  assert.equal(input.durationMinutes, 12);
+  assert.match(input.messages[0].text, /Fix the Cursor adapter/);
+  assert.doesNotMatch(input.messages[0].text, /<timestamp>/);
+});
