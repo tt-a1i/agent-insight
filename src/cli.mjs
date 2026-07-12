@@ -8,7 +8,7 @@ import { collectSessions, inspectSources, resolveSources, SUPPORTED_SOURCES } fr
 import { summarizeSessions } from './analyze.mjs';
 import { installIntegration, AGENTS } from './integrations.mjs';
 import { parseSessionFile } from './parse.mjs';
-import { writeReport } from './report.mjs';
+import { buildCoachSummary, writeReport } from './report.mjs';
 import { HOSTS, resolveInsightRequest } from './interaction.mjs';
 import { failSemanticTask, finalizeSemanticRun, getSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun, semanticSubmissionForTask } from './semantic-run.mjs';
 import { compareParityReports, createBlindSemanticBundle, evaluateBlindSemanticRatings } from './parity.mjs';
@@ -259,7 +259,16 @@ async function runSemantic(flags, context) {
   const value = await finalizeSemanticRun({ runsRoot: paths.runsRoot, runId: flags.run, outputDirectory });
   if (!context.quiet) {
     console.log(`Your shareable insights report is ready:\nfile://${value.files.timestampedHtml}`);
-    console.log('\nWant to dig into any section or try one of the suggestions?');
+    const coach = buildCoachSummary(value.report);
+    if (coach) {
+      console.log(`\nThis run’s one change: ${coach.title}`);
+      if (coach.copyablePrompt) console.log(`Try saying: ${coach.copyablePrompt}`);
+      if (coach.hardTruths.length) {
+        console.log('Hard truths:');
+        for (const [index, item] of coach.hardTruths.entries()) console.log(`  ${index + 1}. ${item}`);
+      }
+    }
+    console.log('\nWant to dig into any section or try the paste-ready rewrite above?');
   }
   return value;
 }

@@ -31,6 +31,8 @@ test('Markdown host commands orchestrate the fused one-shot loop with the active
     assert.match(command, /agent-insight semantic finalize --run/);
     assert.match(command, new RegExp(`current ${label} model`, 'i'));
     assert.match(command, /no cross-run cache command/i);
+    assert.match(command, /highest-leverage change|hard truths/i);
+    assert.match(command, /paste-ready rewrite/i);
     assert.doesNotMatch(command, /agent-insight\s+cache\b/i);
     assert.doesNotMatch(command, childCommand);
   }

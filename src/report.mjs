@@ -55,45 +55,125 @@ function semanticFailureNote(report) {
   return notes.join(' ');
 }
 
+function copyBlock(text) {
+  if (!text) return '';
+  return `<div class="copy">${escapeHtml(text)}</div>`;
+}
+
+function sessionReopenHint(session) {
+  if (!session) return null;
+  if (session.transcriptPath) return session.transcriptPath;
+  if (session.reopenCommand) return session.reopenCommand;
+  if (session.source === 'opencode' && (session.sessionId || session.id)) {
+    return `opencode session ${session.sessionId ?? session.id}`;
+  }
+  return null;
+}
+
+function evidenceLocatorLabel(locator, evidenceSessions = [], t) {
+  const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
+  const label = session
+    ? [session.sessionId ?? session.id, session.source, session.date, session.projectPath || session.projectLabel].filter(Boolean).join(' · ')
+    : locator.sessionId;
+  const reopen = sessionReopenHint(session);
+  const reopenPart = reopen ? ` · ${t.audit.reopen} ${reopen}` : '';
+  return `${label} · messages ${locator.messageIndexes.join(', ')}${reopenPart}`;
+}
+
+function habitCostSummary(finding, evidenceSessions = []) {
+  const ids = new Set((finding.locators ?? []).map((locator) => String(locator.sessionId)));
+  const matched = evidenceSessions.filter((session) => ids.has(String(session.id)) || ids.has(String(session.sessionId)));
+  if (!matched.length) return null;
+  const userTurns = matched.reduce((sum, session) => sum + (Number(session.userMessages) || 0), 0);
+  const toolErrors = matched.reduce((sum, session) => sum + (Number(session.toolErrors) || 0), 0);
+  const durationMinutes = matched.reduce((sum, session) => {
+    if (session.durationMinutes != null) return sum + Number(session.durationMinutes);
+    if (session.startedAt && session.endedAt) {
+      const ms = Date.parse(session.endedAt) - Date.parse(session.startedAt);
+      if (Number.isFinite(ms) && ms > 0) return sum + Math.round(ms / 60_000);
+    }
+    return sum;
+  }, 0);
+  const hasDuration = matched.some((session) => session.durationMinutes != null || (session.startedAt && session.endedAt));
+  return {
+    sessions: matched.length,
+    userTurns,
+    toolErrors,
+    durationMinutes: hasDuration ? durationMinutes : null
+  };
+}
+
+export function buildCoachSummary(report) {
+  const audit = report.extensions?.userAudit;
+  const leverage = audit?.status === 'complete' ? audit.aggregate?.highestLeverageChange : null;
+  const hardTruths = audit?.status === 'complete' ? (audit.aggregate?.topThree ?? []) : [];
+  const automation = audit?.status === 'complete' ? (audit.aggregate?.automationCandidates ?? []).slice(0, 1) : [];
+  const quickWins = report.semantic?.sections?.at_a_glance?.quickWins ?? null;
+  if (leverage) {
+    return {
+      source: 'audit',
+      title: leverage.change,
+      detail: leverage.rationale,
+      copyablePrompt: leverage.copyablePrompt ?? null,
+      hardTruths: hardTruths.map((finding) => finding.accusation),
+      automationName: automation[0]?.name ?? null
+    };
+  }
+  if (typeof quickWins === 'string' && quickWins.trim()) {
+    return {
+      source: 'quick_wins',
+      title: quickWins.trim(),
+      detail: null,
+      copyablePrompt: null,
+      hardTruths: [],
+      automationName: null
+    };
+  }
+  return null;
+}
+
 function renderFindingCard(finding, evidenceSessions = [], t) {
-  const locators = (finding.locators ?? []).map((locator) => {
-    const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
-    const label = session
-      ? [session.sessionId ?? session.id, session.source, session.date, session.projectPath || session.projectLabel].filter(Boolean).join(' · ')
-      : locator.sessionId;
-    return `${label} · messages ${locator.messageIndexes.join(', ')}`;
-  }).join('; ');
+  const locators = (finding.locators ?? []).map((locator) => evidenceLocatorLabel(locator, evidenceSessions, t)).join('; ');
   const quotes = (finding.quotations ?? []).map((quotation) => `<blockquote>${escapeHtml(quotation)}</blockquote>`).join('');
   const count = finding.occurrenceCount == null ? '' : `<p class="muted">${escapeHtml(t.audit.seenAbout(finding.occurrenceCount))}</p>`;
-  return `<article class="prose-card audit-finding" data-severity="${escapeHtml(finding.severity)}" data-posture="${escapeHtml(finding.evidencePosture)}"><p class="muted">${escapeHtml(finding.category)} · ${escapeHtml(finding.severity)} · ${escapeHtml(finding.evidencePosture.replaceAll('_', ' '))}</p><h3>${escapeHtml(finding.accusation)}</h3><p>${escapeHtml(finding.explanation)}</p>${quotes}<p><strong>${escapeHtml(t.audit.betterAlternative)}</strong> ${escapeHtml(finding.betterAlternative)}</p>${count}<p class="evidence">${escapeHtml(t.audit.evidence)} ${escapeHtml(locators || t.audit.unavailable)}</p></article>`;
+  const cost = habitCostSummary(finding, evidenceSessions);
+  const costHtml = cost
+    ? `<p class="muted">${escapeHtml(t.audit.habitCost)} ${escapeHtml(t.audit.habitCostDetail(cost.sessions, cost.userTurns, cost.toolErrors, cost.durationMinutes))}</p>`
+    : '';
+  const rewrite = finding.copyablePrompt
+    ? `<p><strong>${escapeHtml(t.audit.trySaying)}</strong></p>${copyBlock(finding.copyablePrompt)}`
+    : '';
+  return `<article class="prose-card audit-finding" data-severity="${escapeHtml(finding.severity)}" data-posture="${escapeHtml(finding.evidencePosture)}"><p class="muted">${escapeHtml(finding.category)} · ${escapeHtml(finding.severity)} · ${escapeHtml(finding.evidencePosture.replaceAll('_', ' '))}</p><h3>${escapeHtml(finding.accusation)}</h3><p>${escapeHtml(finding.explanation)}</p>${quotes}<p><strong>${escapeHtml(t.audit.betterAlternative)}</strong> ${escapeHtml(finding.betterAlternative)}</p>${rewrite}${count}${costHtml}<p class="evidence">${escapeHtml(t.audit.evidence)} ${escapeHtml(locators || t.audit.unavailable)}</p></article>`;
 }
 
 function renderStrengthCard(item, evidenceSessions = [], t) {
   const quotes = (item.quotations ?? []).map((quotation) => `<blockquote>${escapeHtml(quotation)}</blockquote>`).join('');
-  const locators = (item.locators ?? []).map((locator) => {
-    const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
-    const label = session
-      ? [session.sessionId ?? session.id, session.source, session.date, session.projectPath || session.projectLabel].filter(Boolean).join(' · ')
-      : locator.sessionId;
-    return `${label} · messages ${locator.messageIndexes.join(', ')}`;
-  }).join('; ');
+  const locators = (item.locators ?? []).map((locator) => evidenceLocatorLabel(locator, evidenceSessions, t)).join('; ');
   return `<article class="prose-card"><h3>${escapeHtml(item.habit)}</h3><p>${escapeHtml(item.explanation)}</p>${quotes}${locators ? `<p class="evidence">${escapeHtml(t.audit.evidence)} ${escapeHtml(locators)}</p>` : ''}</article>`;
 }
 
 function renderSelfDefeatingCard(item, evidenceSessions = [], t) {
   const quotes = (item.quotations ?? []).map((quotation) => `<blockquote>${escapeHtml(quotation)}</blockquote>`).join('');
-  const locators = (item.locators ?? []).map((locator) => {
-    const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
-    const label = session
-      ? [session.sessionId ?? session.id, session.source, session.date, session.projectPath || session.projectLabel].filter(Boolean).join(' · ')
-      : locator.sessionId;
-    return `${label} · messages ${locator.messageIndexes.join(', ')}`;
-  }).join('; ');
+  const locators = (item.locators ?? []).map((locator) => evidenceLocatorLabel(locator, evidenceSessions, t)).join('; ');
   return `<article class="prose-card"><h3>${escapeHtml(item.pattern)}</h3><p class="muted">${escapeHtml(t.audit.intent)} ${escapeHtml(item.intent)}</p><p>${escapeHtml(item.explanation)}</p>${quotes}<p class="evidence">${escapeHtml(t.audit.evidence)} ${escapeHtml(locators || t.audit.unavailable)}</p></article>`;
 }
 
 function renderAutomationCard(item, t) {
-  return `<article class="prose-card"><p class="muted">${escapeHtml(item.type)} · ${escapeHtml(item.frequency)}</p><h3>${escapeHtml(item.name)}</h3><p><strong>${escapeHtml(t.audit.trigger)}</strong> ${escapeHtml(item.trigger)}</p><p><strong>${escapeHtml(t.audit.inputs)}</strong> ${escapeHtml((item.inputs ?? []).join('; '))}</p><p><strong>${escapeHtml(t.audit.outputs)}</strong> ${escapeHtml((item.outputs ?? []).join('; '))}</p><p>${escapeHtml(item.rationale)}</p><p class="muted"><strong>${escapeHtml(t.audit.overAutomationRisk)}</strong> ${escapeHtml(item.overAutomationRisk)}</p></article>`;
+  const draft = item.draftBody ? `<p><strong>${escapeHtml(t.audit.draftBody)}</strong></p>${copyBlock(item.draftBody)}` : '';
+  return `<article class="prose-card"><p class="muted">${escapeHtml(item.type)} · ${escapeHtml(item.frequency)}</p><h3>${escapeHtml(item.name)}</h3><p><strong>${escapeHtml(t.audit.trigger)}</strong> ${escapeHtml(item.trigger)}</p><p><strong>${escapeHtml(t.audit.inputs)}</strong> ${escapeHtml((item.inputs ?? []).join('; '))}</p><p><strong>${escapeHtml(t.audit.outputs)}</strong> ${escapeHtml((item.outputs ?? []).join('; '))}</p><p>${escapeHtml(item.rationale)}</p><p class="muted"><strong>${escapeHtml(t.audit.overAutomationRisk)}</strong> ${escapeHtml(item.overAutomationRisk)}</p>${draft}</article>`;
+}
+
+function renderPrimaryAction(report, t) {
+  const coach = buildCoachSummary(report);
+  if (!coach) return '';
+  const sourceNote = coach.source === 'quick_wins'
+    ? `<p class="muted">${escapeHtml(t.audit.primaryActionFallback)}</p>`
+    : '';
+  const copy = coach.copyablePrompt ? `<p><strong>${escapeHtml(t.audit.trySaying)}</strong></p>${copyBlock(coach.copyablePrompt)}` : '';
+  const truths = coach.hardTruths.length
+    ? `<ul>${coach.hardTruths.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
+    : '';
+  return `<aside id="coach-primary-action" class="callout coach-action" data-extension-section="coach_primary_action"><h3>${escapeHtml(t.audit.primaryAction)}</h3><p class="muted">${escapeHtml(t.audit.primaryActionLead)}</p>${sourceNote}<p><strong>${escapeHtml(coach.title)}</strong></p>${coach.detail ? `<p>${escapeHtml(coach.detail)}</p>` : ''}${copy}${truths}</aside>`;
 }
 
 function renderUserAudit(report, t) {
@@ -102,7 +182,7 @@ function renderUserAudit(report, t) {
   const evidenceSessions = report.semantic?.sessions ?? [];
   if (audit.status === 'incomplete') {
     const reason = audit.failure?.reason ?? audit.reason ?? 'incomplete';
-    return `<section data-extension-section="user_audit"><h2>${escapeHtml(t.audit.threeHardTruths)}</h2><div class="empty">${escapeHtml(t.audit.incomplete(reason.replaceAll('_', ' ')))}</div></section>`;
+    return `<section id="three-hard-truths" data-extension-section="user_audit"><h2>${escapeHtml(t.audit.threeHardTruths)}</h2><div class="empty">${escapeHtml(t.audit.incomplete(reason.replaceAll('_', ' ')))}</div></section>`;
   }
   if (audit.status !== 'complete' || !audit.aggregate) return '';
   const top = audit.aggregate.topThree ?? [];
@@ -112,15 +192,15 @@ function renderUserAudit(report, t) {
   const automation = audit.aggregate.automationCandidates ?? [];
   const leverage = audit.aggregate.highestLeverageChange;
   const leverageHtml = leverage
-    ? `<section data-extension-section="user_audit_leverage"><h2>${escapeHtml(t.audit.leverage)}</h2><p class="muted">${escapeHtml(t.audit.leverageLead)}</p><article class="prose-card"><h3>${escapeHtml(leverage.change)}</h3><p>${escapeHtml(leverage.rationale)}</p></article></section>`
+    ? `<section id="user-audit-leverage" data-extension-section="user_audit_leverage"><h2>${escapeHtml(t.audit.leverage)}</h2><p class="muted">${escapeHtml(t.audit.leverageLead)}</p><article class="prose-card"><h3>${escapeHtml(leverage.change)}</h3><p>${escapeHtml(leverage.rationale)}</p>${leverage.copyablePrompt ? `<p><strong>${escapeHtml(t.audit.trySaying)}</strong></p>${copyBlock(leverage.copyablePrompt)}` : ''}</article></section>`
     : '';
   return [
-    `<section data-extension-section="user_audit"><h2>${escapeHtml(t.audit.threeHardTruths)}</h2><p class="muted">${escapeHtml(t.audit.threeHardTruthsLead)}</p>${sectionCards(top, (finding) => renderFindingCard(finding, evidenceSessions, t), t)}</section>`,
-    `<section data-extension-section="user_audit_all"><h2>${escapeHtml(t.audit.allFindings)}</h2><p class="muted">${escapeHtml(t.audit.allFindingsLead)}</p>${sectionCards(remaining, (finding) => renderFindingCard(finding, evidenceSessions, t), t)}</section>`,
-    `<section data-extension-section="user_audit_self_defeating"><h2>${escapeHtml(t.audit.selfDefeating)}</h2><p class="muted">${escapeHtml(t.audit.selfDefeatingLead)}</p>${sectionCards(patterns, (item) => renderSelfDefeatingCard(item, evidenceSessions, t), t)}</section>`,
-    `<section data-extension-section="user_audit_strengths"><h2>${escapeHtml(t.audit.strengths)}</h2><p class="muted">${escapeHtml(t.audit.strengthsLead)}</p>${sectionCards(strengths, (item) => renderStrengthCard(item, evidenceSessions, t), t)}</section>`,
-    `<section data-extension-section="user_audit_automation"><h2>${escapeHtml(t.audit.automation)}</h2><p class="muted">${escapeHtml(t.audit.automationLead)}</p>${sectionCards(automation, (item) => renderAutomationCard(item, t), t)}</section>`,
-    leverageHtml
+    leverageHtml,
+    `<section id="three-hard-truths" data-extension-section="user_audit"><h2>${escapeHtml(t.audit.threeHardTruths)}</h2><p class="muted">${escapeHtml(t.audit.threeHardTruthsLead)}</p>${sectionCards(top, (finding) => renderFindingCard(finding, evidenceSessions, t), t)}</section>`,
+    `<section id="user-audit-all" data-extension-section="user_audit_all"><h2>${escapeHtml(t.audit.allFindings)}</h2><p class="muted">${escapeHtml(t.audit.allFindingsLead)}</p>${sectionCards(remaining, (finding) => renderFindingCard(finding, evidenceSessions, t), t)}</section>`,
+    `<section id="user-audit-self-defeating" data-extension-section="user_audit_self_defeating"><h2>${escapeHtml(t.audit.selfDefeating)}</h2><p class="muted">${escapeHtml(t.audit.selfDefeatingLead)}</p>${sectionCards(patterns, (item) => renderSelfDefeatingCard(item, evidenceSessions, t), t)}</section>`,
+    `<section id="user-audit-strengths" data-extension-section="user_audit_strengths"><h2>${escapeHtml(t.audit.strengths)}</h2><p class="muted">${escapeHtml(t.audit.strengthsLead)}</p>${sectionCards(strengths, (item) => renderStrengthCard(item, evidenceSessions, t), t)}</section>`,
+    `<section id="user-audit-automation" data-extension-section="user_audit_automation"><h2>${escapeHtml(t.audit.automation)}</h2><p class="muted">${escapeHtml(t.audit.automationLead)}</p>${sectionCards(automation, (item) => renderAutomationCard(item, t), t)}</section>`
   ].join('');
 }
 
@@ -156,11 +236,37 @@ export function renderMarkdown(report) {
   ];
   const list = (items) => items.map((item) => `- **${item.title}:** ${item.detail}`).join('\n');
   const ranked = (items) => items.length ? items.map((item) => `- ${escapeMarkdown(item.name)}: ${number(item.count)}`).join('\n') : '- No data';
-  return `# Agent Insight\n\n${range} · ${requestedWindowLabel(report)}\n\n## At a glance\n\n${metrics.map(([label, value]) => `- **${label}:** ${number(value)}`).join('\n')}\n\n## Agent coverage\n\n${sourceTable(report)}\n\n## Read coverage\n\n${projectFilterNote(report)} ${semanticFailureNote(report)}\n\n${coverageTable(report)}\n\n## Project areas\n\n${ranked(report.projects)}\n\n## Top tools\n\n${ranked(report.topTools)}\n\n## Providers\n\n${ranked(report.providers)}\n\n## Models\n\n${ranked(report.models)}\n\n## Evidence-backed observations\n\n${list(report.observations)}\n\n## Next moves\n\n${list(report.recommendations)}\n\n## Evidence policy\n\n${report.privacy.note}\n`;
+  const coach = buildCoachSummary(report);
+  const coachSection = coach
+    ? [
+      '## This run’s one change',
+      '',
+      `- **Change:** ${escapeMarkdown(coach.title)}`,
+      coach.detail ? `- **Why:** ${escapeMarkdown(coach.detail)}` : null,
+      coach.copyablePrompt ? `- **Try saying:** ${escapeMarkdown(coach.copyablePrompt)}` : null,
+      coach.hardTruths.length ? `- **Hard truths:** ${coach.hardTruths.map(escapeMarkdown).join('; ')}` : null,
+      coach.automationName ? `- **Automation candidate:** ${escapeMarkdown(coach.automationName)}` : null,
+      ''
+    ].filter((line) => line !== null).join('\n')
+    : '';
+  return `# Agent Insight\n\n${range} · ${requestedWindowLabel(report)}\n\n${coachSection}## At a glance\n\n${metrics.map(([label, value]) => `- **${label}:** ${number(value)}`).join('\n')}\n\n## Agent coverage\n\n${sourceTable(report)}\n\n## Read coverage\n\n${projectFilterNote(report)} ${semanticFailureNote(report)}\n\n${coverageTable(report)}\n\n## Project areas\n\n${ranked(report.projects)}\n\n## Top tools\n\n${ranked(report.topTools)}\n\n## Providers\n\n${ranked(report.providers)}\n\n## Models\n\n${ranked(report.models)}\n\n## Evidence-backed observations\n\n${list(report.observations)}\n\n## Next moves\n\n${list(report.recommendations)}\n\n## Evidence policy\n\n${report.privacy.note}\n`;
 }
 
 export function renderAgentPrompt(report) {
-  return `# Agent Insights narrative handoff\n\nRead \`report.md\` in this same directory, then give the user a concise personalized review.\n\nRules:\n\n- Treat every count as metadata, not proof of intent, satisfaction, or quality.\n- Clearly separate measured facts from your inference.\n- Representative quotations, project paths, and session identifiers in the report are intentional evidence labels; do not treat them as a complete transcript dump.\n- Check **Read coverage** first; do not compare or generalize from a partial, unavailable, root-only, or experimental source as if it were complete.\n- Prioritize 2–3 durable changes: project instructions, a reusable skill/command, or an environment/tooling fix.\n- Avoid vendor-specific advice unless the report shows that source.\n\nCurrent coverage: ${report.totals.sessions} sessions across ${Object.keys(report.sources).length} detected agent sources.\n`;
+  const coach = buildCoachSummary(report);
+  const coachBlock = coach
+    ? [
+      '',
+      'Coach summary for this run (lead with this):',
+      `- One change: ${coach.title}`,
+      coach.detail ? `- Why: ${coach.detail}` : null,
+      coach.copyablePrompt ? `- Paste-ready rewrite: ${coach.copyablePrompt}` : null,
+      ...(coach.hardTruths.map((item, index) => `- Hard truth ${index + 1}: ${item}`)),
+      coach.automationName ? `- Top automation candidate (advisory only, do not write files unless the user asks): ${coach.automationName}` : null,
+      ''
+    ].filter((line) => line !== null).join('\n')
+    : '\n';
+  return `# Agent Insights narrative handoff\n\nRead \`report.md\` in this same directory, then give the user a concise personalized review.${coachBlock}Rules:\n\n- Lead with the single highest-leverage change (or At a Glance quick win when audit is missing). Do not open with metrics.\n- Treat every count as metadata, not proof of intent, satisfaction, or quality.\n- Clearly separate measured facts from your inference.\n- Representative quotations, project paths, transcript paths, and session identifiers in the report are intentional evidence labels; do not treat them as a complete transcript dump.\n- Check **Read coverage** first; do not compare or generalize from a partial, unavailable, root-only, or experimental source as if it were complete.\n- Prefer one concrete paste-ready rewrite over a long list of advice. Automation candidates stay advisory unless the user asks you to write a Skill/command.\n- Avoid vendor-specific advice unless the report shows that source.\n\nCurrent coverage: ${report.totals.sessions} sessions across ${Object.keys(report.sources).length} detected agent sources.\n`;
 }
 
 function evidence(ids, sessions = []) {
@@ -314,6 +420,8 @@ nav.toc .wordmark span{color:var(--accent)}
 nav.toc a,nav.toc span{color:var(--mute);font-family:var(--mono);font-size:11.5px;letter-spacing:.3px;padding:0;border:0;background:transparent;border-radius:0;text-decoration:none;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center}
 nav.toc a:hover{color:var(--accent)}
 nav.toc span{opacity:.55}
+nav.toc .coach-links{display:inline-flex;gap:4px 16px;margin-left:8px;padding-left:16px;border-left:1px solid var(--hair)}
+.coach-action{margin:18px 0 8px}
 .timezone{display:flex;gap:10px;align-items:center;color:var(--mute);font-size:12.5px;margin-bottom:12px;font-family:var(--mono)}
 .timezone select{background:var(--bg);color:var(--ink);border:1px solid var(--hair);border-radius:2px;padding:6px 8px;font-family:var(--sans)}
 blockquote{margin:12px 0;padding:10px 14px;border-left:3px solid var(--accent);background:var(--soft);color:var(--ink);font-family:var(--serif);font-style:italic}
@@ -372,7 +480,7 @@ function renderHtmlLegacy(report) {
   const wordmark = brandParts.length > 1
     ? `${escapeHtml(brandParts.slice(0, -1).join(' '))}<span>${escapeHtml(brandParts.at(-1))}</span>`
     : `<span>${escapeHtml(brandTitle)}</span>`;
-  const toc = `<nav class="toc" aria-label="${escapeHtml(t.navAria ?? t.tocAria)}"><div class="wordmark">${wordmark}</div><a href="#what-you-work-on">${escapeHtml(t.toc.whatYouWorkOn)}</a><a href="#how-you-use">${escapeHtml(t.toc.howYouUse)}</a><a href="#impressive-things">${escapeHtml(t.toc.impressiveThings)}</a><a href="#where-things-go-wrong">${escapeHtml(t.toc.whereThingsGoWrong)}</a><a href="#features-to-try">${escapeHtml(t.toc.featuresToTry)}</a><a href="#new-usage-patterns">${escapeHtml(t.toc.newUsagePatterns)}</a><a href="#on-the-horizon">${escapeHtml(t.toc.onTheHorizon)}</a><span aria-disabled="true">${escapeHtml(t.toc.teamFeedback)}</span></nav>`;
+  const toc = `<nav class="toc" aria-label="${escapeHtml(t.navAria ?? t.tocAria)}"><div class="wordmark">${wordmark}</div><a href="#what-you-work-on">${escapeHtml(t.toc.whatYouWorkOn)}</a><a href="#how-you-use">${escapeHtml(t.toc.howYouUse)}</a><a href="#impressive-things">${escapeHtml(t.toc.impressiveThings)}</a><a href="#where-things-go-wrong">${escapeHtml(t.toc.whereThingsGoWrong)}</a><a href="#features-to-try">${escapeHtml(t.toc.featuresToTry)}</a><a href="#new-usage-patterns">${escapeHtml(t.toc.newUsagePatterns)}</a><a href="#on-the-horizon">${escapeHtml(t.toc.onTheHorizon)}</a><span aria-disabled="true">${escapeHtml(t.toc.teamFeedback)}</span><div class="coach-links" data-extension-toc><a href="#coach-primary-action">${escapeHtml(t.tocCoach.primaryAction)}</a><a href="#three-hard-truths">${escapeHtml(t.tocCoach.hardTruths)}</a><a href="#user-audit-leverage">${escapeHtml(t.tocCoach.leverage)}</a><a href="#user-audit-automation">${escapeHtml(t.tocCoach.automation)}</a><a href="#evidence-index">${escapeHtml(t.tocCoach.evidence)}</a></div></nav>`;
   const utcHours = JSON.stringify(insights.messageHours ?? {});
   const timeChart = `<label class="timezone">${escapeHtml(t.sections.timezone)} <select id="time-zone"><option value="-8">${escapeHtml(t.timezones.pt)}</option><option value="-5">${escapeHtml(t.timezones.et)}</option><option value="0">${escapeHtml(t.timezones.london)}</option><option value="1">${escapeHtml(t.timezones.cet)}</option><option value="9">${escapeHtml(t.timezones.tokyo)}</option><option value="custom">${escapeHtml(t.timezones.custom)}</option></select></label><div id="time-chart" data-utc-hours="${escapeHtml(utcHours)}">${barChart('Time of day', timeOfDayBuckets(insights.messageHours, t), { t })}</div>`;
   const tzPrompt = JSON.stringify(t.timezones.prompt);
@@ -428,9 +536,13 @@ export function renderHtml(report) {
     );
   }
   // Legacy placeholder heading was already localized to whatHelpedMost in renderHtmlLegacy.
-  const evidenceRows = (report.semantic?.sessions ?? []).map((session) => `<tr><td>${escapeHtml(session.sessionId ?? session.id)}</td><td>${escapeHtml(session.source)}</td><td>${escapeHtml(session.date ?? 'unknown')}</td><td>${escapeHtml(session.projectPath || session.projectLabel || '—')}</td></tr>`).join('');
-  const evidenceIndex = `<section><h2>${escapeHtml(t.sections.evidenceIndex)}</h2><div class="table-wrap"><table><thead><tr><th>${escapeHtml(t.sections.session)}</th><th>${escapeHtml(t.sections.agent)}</th><th>${escapeHtml(t.sections.date)}</th><th>${escapeHtml(t.sections.project)}</th></tr></thead><tbody>${evidenceRows || `<tr><td colspan="4">${escapeHtml(t.sections.noEvidenceSessions)}</td></tr>`}</tbody></table></div>${renderEvidenceQuotations(report)}</section>`;
+  const evidenceRows = (report.semantic?.sessions ?? []).map((session) => {
+    const reopen = sessionReopenHint(session) || '—';
+    return `<tr><td>${escapeHtml(session.sessionId ?? session.id)}</td><td>${escapeHtml(session.source)}</td><td>${escapeHtml(session.date ?? 'unknown')}</td><td>${escapeHtml(session.projectPath || session.projectLabel || '—')}</td><td><code>${escapeHtml(reopen)}</code></td></tr>`;
+  }).join('');
+  const evidenceIndex = `<section id="evidence-index"><h2>${escapeHtml(t.sections.evidenceIndex)}</h2><div class="table-wrap"><table><thead><tr><th>${escapeHtml(t.sections.session)}</th><th>${escapeHtml(t.sections.agent)}</th><th>${escapeHtml(t.sections.date)}</th><th>${escapeHtml(t.sections.project)}</th><th>${escapeHtml(t.audit.reopen)}</th></tr></thead><tbody>${evidenceRows || `<tr><td colspan="5">${escapeHtml(t.sections.noEvidenceSessions)}</td></tr>`}</tbody></table></div>${renderEvidenceQuotations(report)}</section>`;
   const userAuditHtml = renderUserAudit(report, t);
+  const primaryActionHtml = renderPrimaryAction(report, t);
   html = html.replace(`<section><h2>${escapeHtml(t.sections.readCoverage)}</h2>`, `${userAuditHtml}${evidenceIndex}<section><h2>${escapeHtml(t.sections.readCoverage)}</h2><p class="muted">${escapeHtml(semanticFailureNote(report))}</p>`);
   const headerClose = html.indexOf('</header>');
   const headerEnd = headerClose < 0 ? -1 : headerClose + '</header>'.length;
@@ -443,7 +555,7 @@ export function renderHtml(report) {
   if ([headerEnd, tocStart, tocEnd, metricsStart, metricsEnd, glanceStart, nextSection].some((index) => index < 0)) {
     throw new Error('The parity report layout could not be assembled.');
   }
-  html = `${html.slice(0, headerEnd)}${html.slice(glanceStart, nextSection)}${html.slice(tocStart, tocEnd)}${html.slice(metricsStart, metricsEnd)}${html.slice(nextSection)}`;
+  html = `${html.slice(0, headerEnd)}${html.slice(glanceStart, nextSection)}${primaryActionHtml}${html.slice(tocStart, tocEnd)}${html.slice(metricsStart, metricsEnd)}${html.slice(nextSection)}`;
 
   const sections = report.semantic?.sections ?? {};
   const semanticContracts = [

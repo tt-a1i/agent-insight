@@ -1105,15 +1105,33 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
     analyzer: run.analyzer,
     failures: run.failures,
     sectionFailures: run.sectionFailures,
-    sessions: eligibleSessions.map(({ id, date, source, sessionId, projectPath, projectLabel, facet }) => ({
-      id,
-      date,
-      source,
-      sessionId: sessionId ?? id,
-      projectPath: projectPath ?? null,
-      projectLabel: projectLabel ?? null,
-      facet
-    })),
+    sessions: eligibleSessions.map((session) => {
+      const { id, date, source, sessionId, projectPath, projectLabel, facet, locator, metrics, durationMinutes } = session;
+      const transcriptPath = locator?.kind === 'file' ? locator.path : null;
+      const reopenCommand = transcriptPath
+        ? transcriptPath
+        : locator?.kind === 'opencode'
+          ? `opencode session ${locator.sessionId ?? sessionId ?? id}`
+          : null;
+      return {
+        id,
+        date,
+        source,
+        sessionId: sessionId ?? id,
+        projectPath: projectPath ?? null,
+        projectLabel: projectLabel ?? null,
+        facet,
+        transcriptPath,
+        reopenCommand,
+        userMessages: metrics?.userMessages ?? null,
+        assistantMessages: metrics?.assistantMessages ?? null,
+        toolCalls: metrics?.toolCalls ?? null,
+        toolErrors: metrics?.toolErrors ?? null,
+        durationMinutes: durationMinutes ?? null,
+        startedAt: metrics?.startedAt ?? null,
+        endedAt: metrics?.endedAt ?? null
+      };
+    }),
     sections: run.sections
   };
   const report = summarizeSessions(sessions, {

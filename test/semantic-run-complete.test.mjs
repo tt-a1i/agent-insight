@@ -222,9 +222,13 @@ test('a semantic run progresses through every section and finalizes a timestampe
   assert.equal(final.report.semantic.sessions[0].sessionId, 'claude-parity');
   assert.equal(final.report.semantic.sessions[0].projectPath, '/work/parity');
   assert.ok(html.indexOf('Three hard truths') > html.indexOf('The parser blinked first'));
+  assert.ok(html.indexOf('One highest-leverage change') < html.indexOf('Three hard truths'));
   assert.ok(html.indexOf('Habits that undercut you') > html.indexOf('All findings'));
-  assert.ok(html.indexOf('One highest-leverage change') > html.indexOf('Automation candidates'));
+  assert.ok(html.indexOf('Automation candidates') > html.indexOf('Habits worth keeping'));
+  assert.ok(html.indexOf('Evidence index') > html.indexOf('Automation candidates'));
   assert.ok(html.indexOf('Evidence index') > html.indexOf('One highest-leverage change'));
+  assert.match(html, /This run’s one change|Try saying this next/);
+  assert.ok(final.report.semantic.sessions[0].transcriptPath || final.report.semantic.sessions[0].reopenCommand);
   const outputNames = await readdir(join(home, 'usage-data'));
   assert.deepEqual(outputNames.sort(), [
     'agent-prompt.md',

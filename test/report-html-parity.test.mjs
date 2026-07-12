@@ -28,6 +28,15 @@ function semantic() {
       source: 'claude',
       projectPath: '/work/parser',
       projectLabel: 'parser',
+      transcriptPath: '/tmp/claude-session-a.jsonl',
+      reopenCommand: '/tmp/claude-session-a.jsonl',
+      userMessages: 3,
+      assistantMessages: 4,
+      toolCalls: 5,
+      toolErrors: 1,
+      durationMinutes: 10,
+      startedAt: '2026-07-01T09:00:00.000Z',
+      endedAt: '2026-07-01T09:10:00.000Z',
       facet: {
         underlyingGoal: 'Fix a parser', briefSummary: 'Parser fixed', goalCategories: { fix_bug: 1 }, outcome: 'fully_achieved',
         userSatisfactionCounts: { satisfied: 1 }, agentHelpfulness: 'very_helpful', sessionType: 'single_task',
@@ -97,7 +106,7 @@ test('HTML follows the Claude 2.1.206 insights information architecture in order
   assert.match(html, /Primary successes/);
   assert.match(html, /Evidence index/);
   assert.match(html, /Please fix the parser now/);
-  assert.match(html, /<td>claude-session-a<\/td><td>claude<\/td><td>2026-07-01<\/td><td>\/work\/parser<\/td>/);
+  assert.match(html, /<td>claude-session-a<\/td><td>claude<\/td><td>2026-07-01<\/td><td>\/work\/parser<\/td><td><code>\/tmp\/claude-session-a\.jsonl<\/code><\/td>/);
   // Optional font / Mermaid CDN links are allowed; report body must not invent external URLs.
   const bodyStart = html.indexOf('<body');
   const bodyHtml = bodyStart >= 0 ? html.slice(bodyStart) : html;
@@ -116,6 +125,7 @@ test('fused user-audit extension HTML remains outside Claude baseline parity sco
     locators: [{ sessionId: 'claude-session-a', messageIndexes: [1] }],
     occurrenceCount: 1,
     betterAlternative: 'Name the failing case first.',
+    copyablePrompt: 'Fix only the failing parser case; stop when the named test is green.',
     rootCause: accusation.toLowerCase()
   });
   const extensions = {
@@ -147,9 +157,14 @@ test('fused user-audit extension HTML remains outside Claude baseline parity sco
           inputs: ['failing case'],
           outputs: ['green tests'],
           rationale: 'Repeats every session.',
-          overAutomationRisk: 'May hide novel failures.'
+          overAutomationRisk: 'May hide novel failures.',
+          draftBody: '# parser-regression-gate\n\nRequire a failing case before edits.'
         }],
-        highestLeverageChange: { change: 'Name the failing case first', rationale: 'Prevents rework.' }
+        highestLeverageChange: {
+          change: 'Name the failing case first',
+          rationale: 'Prevents rework.',
+          copyablePrompt: 'Before edits: failing case is X; done when test Y is green.'
+        }
       }
     }
   };
@@ -157,7 +172,17 @@ test('fused user-audit extension HTML remains outside Claude baseline parity sco
   const html = renderHtml(report);
   assert.match(html, /Three hard truths/);
   assert.match(html, /One highest-leverage change/);
+  assert.match(html, /This run’s one change/);
+  assert.match(html, /Try saying this next/);
+  assert.match(html, /Before edits: failing case is X/);
+  assert.match(html, /Estimated cost in cited sessions/);
+  assert.match(html, /Reopen: \/tmp\/claude-session-a\.jsonl/);
+  assert.match(html, /Copyable draft/);
+  assert.match(html, /parser-regression-gate/);
+  assert.match(html, /data-extension-toc/);
+  assert.ok(html.indexOf('One highest-leverage change') < html.indexOf('Three hard truths'));
   assert.ok(html.indexOf('Three hard truths') > html.indexOf('The parser blinked first'));
+  assert.ok(html.indexOf('This run’s one change') < html.indexOf('<nav class="toc"'));
   const result = compareParityReports(report, report, { candidateHtml: html });
   assert.equal(result.acceptance.structuralParity, true, JSON.stringify(result.structural));
   assert.equal(result.acceptance.deterministicCorrectness, true);

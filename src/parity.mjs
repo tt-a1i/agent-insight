@@ -31,7 +31,15 @@ const EXTENSION_HTML_HEADINGS = new Set([
   'Automation candidates',
   'One highest-leverage change',
   'Evidence index',
-  'Read coverage'
+  'Read coverage',
+  '三条硬事实',
+  '全部发现',
+  '会拆台的习惯',
+  '值得保留的习惯',
+  '可自动化候选',
+  '一个最高杠杆改动',
+  '证据索引',
+  '读取覆盖'
 ]);
 
 function hasOwn(object, key) {

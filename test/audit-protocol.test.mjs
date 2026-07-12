@@ -45,6 +45,7 @@ function validFinding(overrides = {}) {
     locators: [{ message_indexes: [1] }],
     occurrence_count: 1,
     better_alternative: 'Name the files, acceptance checks, and non-goals before asking for a fix.',
+    copyable_prompt: 'Fix the parser only: name the failing case, the files in scope, and the test that must pass before editing.',
     root_cause: 'vague authorization without criteria',
     ...overrides
   };
@@ -78,7 +79,8 @@ function extensionFields(overrides = {}) {
     }],
     highest_leverage_change: {
       change: 'State the acceptance check before authorizing edits.',
-      rationale: 'One concrete done line collapses the vague-authorization habit.'
+      rationale: 'One concrete done line collapses the vague-authorization habit.',
+      copyable_prompt: 'Before any edits: the acceptance check is <test or observable signal>; stay inside <files>; non-goals are <list>.'
     },
     automation_candidates: [{
       name: 'ship-checklist',
@@ -88,7 +90,8 @@ function extensionFields(overrides = {}) {
       inputs: ['changed files', 'test command'],
       outputs: ['docs update', 'PR body with checklist'],
       rationale: 'The migrate-docs-PR sequence repeats as one multi-step workflow.',
-      over_automation_risk: 'Would hide judgment when the release path actually needs a human gate.'
+      over_automation_risk: 'Would hide judgment when the release path actually needs a human gate.',
+      draft_body: '# ship-checklist\n\n1. Run tests\n2. Update docs\n3. Open PR with checklist'
     }],
     ...overrides
   };
@@ -144,10 +147,17 @@ test('session audit accepts grounded findings across the fixed taxonomy and free
 
   assert.equal(result.findings.length, 4);
   assert.equal(result.findings[0].evidencePosture, 'established_pattern');
+  assert.equal(result.findings[0].copyablePrompt.includes('failing case'), true);
   assert.equal(result.findings[1].category, 'correction_quality');
   assert.equal(result.findings[2].category, 'convergence');
   assert.equal(result.findings[3].category, 'freeform');
   assert.deepEqual(result.userTexts, [userText, regressionText, workflowText, '继续', '可以', 'ok']);
+});
+
+test('session audit rejects a copyable prompt that merely repeats the quotation', () => {
+  assert.throws(() => validateSessionAuditResult({
+    findings: [validFinding({ copyable_prompt: userText })]
+  }, input), /rewrite the quotation/);
 });
 
 test('session audit rejects fabricated quotations, unknown locators, unsupported counts, disguised certainty, and medical judgments', () => {
@@ -194,6 +204,8 @@ test('audit aggregate collapses duplicate root causes, keeps top three, and seve
   assert.equal(request.task, 'audit_aggregate');
   assert.match(request.prompt, /strengths/);
   assert.match(request.prompt, /automation_candidates/);
+  assert.match(request.prompt, /copyable_prompt/);
+  assert.match(request.prompt, /draft_body/);
   assert.match(request.prompt, /highest_leverage_change/);
 
   const result = validateAuditAggregateResult({
@@ -217,7 +229,9 @@ test('audit aggregate collapses duplicate root causes, keeps top three, and seve
   assert.equal(result.remaining.some((item) => item.rootCause === 'vague authorization without criteria'), false);
   assert.equal(result.strengths.length, 1);
   assert.equal(result.highestLeverageChange.change, 'State the acceptance check before authorizing edits.');
+  assert.match(result.highestLeverageChange.copyablePrompt, /acceptance check/);
   assert.equal(result.automationCandidates[0].type, 'Skill');
+  assert.match(result.automationCandidates[0].draftBody, /ship-checklist/);
 });
 
 test('audit aggregate rejects unknown session locators', () => {
