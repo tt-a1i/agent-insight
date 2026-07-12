@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { finalizeSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun } from '../src/semantic-run.mjs';
+import { failSemanticTask, finalizeSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun } from '../src/semantic-run.mjs';
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url);
 
@@ -40,8 +40,79 @@ function aggregateResult(task, id) {
   return values[task];
 }
 
-test('a semantic run progresses through every section and finalizes a timestamped report', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'agent-insight-complete-'));
+function sessionAuditResult() {
+  return {
+    findings: [{
+      category: 'acceptance_criteria',
+      severity: 'high',
+      evidence_posture: 'established_pattern',
+      accusation: 'You patch first and define done later.',
+      explanation: 'The ask jumps to a fix without stating the regression gate up front.',
+      quotations: ['Fix the broken parser'],
+      locators: [{ message_indexes: [1] }],
+      occurrence_count: 1,
+      better_alternative: 'State the failing case and the test that must pass before authorizing edits.',
+      root_cause: 'implementation before acceptance criteria'
+    }, {
+      category: 'fragmented_requirements',
+      severity: 'medium',
+      evidence_posture: 'bold_inference',
+      accusation: 'Scope arrives in sequel form.',
+      explanation: 'A follow-up regression request appears only after the first repair lands.',
+      quotations: ['Add a regression test for the parser edge case.'],
+      locators: [{ message_indexes: [9] }],
+      occurrence_count: null,
+      better_alternative: 'Bundle the repair and the regression expectation in the first instruction.',
+      root_cause: 'late requirement drip'
+    }]
+  };
+}
+
+function auditAggregateResult(sessionId) {
+  return {
+    top_three: [
+      {
+        category: 'acceptance_criteria',
+        severity: 'high',
+        evidence_posture: 'established_pattern',
+        accusation: 'You patch first and define done later.',
+        explanation: 'The ask jumps to a fix without stating the regression gate up front.',
+        quotations: ['Fix the broken parser'],
+        locators: [{ session_id: sessionId, message_indexes: [1] }],
+        occurrence_count: 1,
+        better_alternative: 'State the failing case and the test that must pass before authorizing edits.',
+        root_cause: 'implementation before acceptance criteria'
+      },
+      {
+        category: 'fragmented_requirements',
+        severity: 'medium',
+        evidence_posture: 'bold_inference',
+        accusation: 'Scope arrives in sequel form.',
+        explanation: 'A follow-up regression request appears only after the first repair lands.',
+        quotations: ['Add a regression test for the parser edge case.'],
+        locators: [{ session_id: sessionId, message_indexes: [9] }],
+        occurrence_count: null,
+        better_alternative: 'Bundle the repair and the regression expectation in the first instruction.',
+        root_cause: 'late requirement drip'
+      },
+      {
+        category: 'goal_clarity',
+        severity: 'low',
+        evidence_posture: 'bold_inference',
+        accusation: 'The mission title is implied, not named.',
+        explanation: 'Parser work is obvious from the ask, but success criteria stay implicit.',
+        quotations: ['Fix the broken parser'],
+        locators: [{ session_id: sessionId, message_indexes: [1] }],
+        occurrence_count: null,
+        better_alternative: 'Name the broken behavior and the observable green signal.',
+        root_cause: 'implied goals'
+      }
+    ],
+    remaining: []
+  };
+}
+
+async function prepareCompleteRun(home) {
   const runsRoot = join(home, 'runs');
   const prepared = await prepareSemanticRun({
     runsRoot,
@@ -50,8 +121,12 @@ test('a semantic run progresses through every section and finalizes a timestampe
     analyzer: { host: 'claude', model: 'current' },
     diagnostics: [{ source: 'claude', coverage: 'available', filesFound: 1, filesSelected: 1, filesLimited: 0, filesPartial: 0, filesSkipped: 0 }]
   });
-  const facetTask = await nextSemanticTask({ runsRoot, runId: prepared.id });
-  await ingestSemanticResult({ runsRoot, runId: prepared.id, taskId: facetTask.id, result: {
+  return { runsRoot, prepared };
+}
+
+async function driveBaseline(runsRoot, runId) {
+  const facetTask = await nextSemanticTask({ runsRoot, runId });
+  await ingestSemanticResult({ runsRoot, runId, taskId: facetTask.id, result: {
     underlying_goal: 'Fix a parser', goal_categories: { fix_bug: 1 }, outcome: 'fully_achieved', user_satisfaction_counts: { satisfied: 1 },
     claude_helpfulness: 'very_helpful', session_type: 'single_task', friction_counts: {}, friction_detail: '', primary_success: 'good_debugging',
     brief_summary: 'Parser fixed.', evidence: [{
@@ -61,20 +136,40 @@ test('a semantic run progresses through every section and finalizes a timestampe
     }]
   } });
   const id = facetTask.input.opaqueId;
+  const sessionId = facetTask.input.sessionId ?? id;
   while (true) {
-    const task = await nextSemanticTask({ runsRoot, runId: prepared.id });
-    if (task.kind === 'complete') break;
+    const task = await nextSemanticTask({ runsRoot, runId });
+    if (task.kind === 'session_audit' || task.kind === 'audit_aggregate' || task.kind === 'complete') return { id, sessionId, task };
     if (task.kind === 'aggregate_batch') {
       assert.equal(task.tasks.length, 7);
-      for (const item of task.tasks) await ingestSemanticResult({ runsRoot, runId: prepared.id, taskId: item.id, result: aggregateResult(item.section, id) });
+      for (const item of task.tasks) await ingestSemanticResult({ runsRoot, runId, taskId: item.id, result: aggregateResult(item.section, id) });
       continue;
     }
     assert.equal(task.kind, 'aggregate');
-    await ingestSemanticResult({ runsRoot, runId: prepared.id, taskId: task.id, result: aggregateResult(task.section, id) });
+    await ingestSemanticResult({ runsRoot, runId, taskId: task.id, result: aggregateResult(task.section, id) });
   }
+}
+
+test('a semantic run progresses through every section and finalizes a timestamped report', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agent-insight-complete-'));
+  const { runsRoot, prepared } = await prepareCompleteRun(home);
+  const { sessionId, task: firstAudit } = await driveBaseline(runsRoot, prepared.id);
+  assert.equal(firstAudit.kind, 'session_audit');
+  await ingestSemanticResult({ runsRoot, runId: prepared.id, taskId: firstAudit.id, result: sessionAuditResult() });
+  const aggregateAudit = await nextSemanticTask({ runsRoot, runId: prepared.id });
+  assert.equal(aggregateAudit.kind, 'audit_aggregate');
+  await ingestSemanticResult({
+    runsRoot,
+    runId: prepared.id,
+    taskId: aggregateAudit.id,
+    result: auditAggregateResult(sessionId)
+  });
+  assert.equal((await nextSemanticTask({ runsRoot, runId: prepared.id })).kind, 'complete');
 
   const final = await finalizeSemanticRun({ runsRoot, runId: prepared.id, outputDirectory: join(home, 'usage-data') });
   assert.equal(final.report.parity.structuralStatus, 'complete');
+  assert.equal(final.report.extensions.userAudit.status, 'complete');
+  assert.equal(final.report.extensions.userAudit.aggregate.topThree.length, 3);
   assert.deepEqual(final.report.coverage.eligibility, { scanned: 1, eligible: 1, excluded: 0, reasons: {} });
   assert.match(final.files.timestampedHtml, /report-\d{4}-\d{2}-\d{2}-\d{6}\.html$/);
   const html = await readFile(final.files.timestampedHtml, 'utf8');
@@ -82,9 +177,36 @@ test('a semantic run progresses through every section and finalizes a timestampe
   assert.match(html, /1 eligible/);
   assert.match(html, /The parser blinked first/);
   assert.match(html, /Fix the broken parser/);
+  assert.match(html, /Three hard truths/);
+  assert.match(html, /All findings/);
+  assert.match(html, /You patch first and define done later/);
   assert.match(html, /claude-parity/);
   assert.match(html, /\/work\/parity/);
   assert.match(final.report.privacy.note, /representative user quotations/);
   assert.equal(final.report.semantic.sessions[0].sessionId, 'claude-parity');
   assert.equal(final.report.semantic.sessions[0].projectPath, '/work/parity');
+  assert.ok(html.indexOf('Three hard truths') > html.indexOf('The parser blinked first'));
+  assert.ok(html.indexOf('Evidence index') > html.indexOf('All findings'));
+});
+
+test('audit task failure still finalizes the Claude baseline with explicit incomplete extension coverage', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agent-insight-audit-fail-'));
+  const { runsRoot, prepared } = await prepareCompleteRun(home);
+  const { task: auditTask } = await driveBaseline(runsRoot, prepared.id);
+  assert.equal(auditTask.kind, 'session_audit');
+  await failSemanticTask({ runsRoot, runId: prepared.id, taskId: auditTask.id, reason: 'invalid_analyzer_response' });
+  assert.equal((await nextSemanticTask({ runsRoot, runId: prepared.id })).kind, 'complete');
+
+  const final = await finalizeSemanticRun({ runsRoot, runId: prepared.id, outputDirectory: join(home, 'usage-data') });
+  assert.equal(final.report.parity.structuralStatus, 'complete');
+  assert.equal(final.report.extensions.userAudit.status, 'incomplete');
+  assert.equal(final.report.extensions.userAudit.failure.reason, 'invalid_analyzer_response');
+  assert.equal(final.report.coverage.extensionFailures[0].extension, 'userAudit');
+  const html = await readFile(final.files.html, 'utf8');
+  assert.match(html, /At a Glance/);
+  assert.match(html, /The parser blinked first/);
+  assert.match(html, /Three hard truths/);
+  assert.match(html, /User audit extension coverage is incomplete/);
+  assert.match(html, /Extension coverage is partial: userAudit/);
+  assert.doesNotMatch(html, /All findings/);
 });

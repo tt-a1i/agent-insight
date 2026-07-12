@@ -224,8 +224,15 @@ function htmlContractFailures(html, candidate) {
     else previous = node.start;
   }
   const actualHeadings = headings.map(textContent);
-  const withTransparentCoverage = [...expectedHeadings, 'Evidence index', 'Read coverage'];
-  if (!isDeepStrictEqual(actualHeadings, expectedHeadings) && !isDeepStrictEqual(actualHeadings, withTransparentCoverage)) failures.push('html.headings');
+  const transparentTails = [
+    [],
+    ['Evidence index', 'Read coverage'],
+    ['Three hard truths', 'Evidence index', 'Read coverage'],
+    ['Three hard truths', 'All findings', 'Evidence index', 'Read coverage']
+  ];
+  if (!transparentTails.some((tail) => isDeepStrictEqual(actualHeadings, [...expectedHeadings, ...tail]))) {
+    failures.push('html.headings');
+  }
 
   if (!(candidate.insights.userResponseTimes?.length > 0) && !textContent(sectionWithHeading(body, 'User Response Time Distribution')).includes('No response time data')) failures.push('html.empty:response_time');
   if (!Object.values(candidate.insights.messageHours ?? {}).some((count) => Number(count) > 0) && !textContent(sectionWithHeading(body, 'User Messages by Time of Day')).includes('No time data')) failures.push('html.empty:time_of_day');

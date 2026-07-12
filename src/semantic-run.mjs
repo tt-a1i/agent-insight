@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { ANALYSIS_PROTOCOL_VERSION, createSessionChunkRequest, createSessionFacetFromChunksRequest, createSessionFacetRequest, splitSessionMessages, validateSessionChunkResult, validateSessionFacet } from './protocol.mjs';
 import { AGGREGATE_TASKS, createAggregateChunkRequest, createAggregateRequest, createAtAGlanceChunkRequest, splitAggregateSections, splitAggregateSessions, validateAggregateChunkResult, validateAggregateResult } from './aggregate-protocol.mjs';
+import { AUDIT_PROTOCOL_VERSION, createAuditAggregateRequest, createSessionAuditRequest, validateAuditAggregateResult, validateSessionAuditResult } from './audit-protocol.mjs';
 import { extractAnalysisInput } from './transcript.mjs';
 import { parseSessionFile } from './parse.mjs';
 import { summarizeSessions } from './analyze.mjs';
@@ -136,9 +137,53 @@ function nextAggregateSection(run) {
   return AGGREGATE_TASKS.find((name) => run.sections[name] === undefined && run.sectionFailures?.[name] === undefined);
 }
 
+function auditEligibleSessions(run) {
+  return run.sessions.filter((session) => session.status === 'complete');
+}
+
+function nextAuditSession(run) {
+  if (run.extensionFailures?.userAudit) return null;
+  const audits = run.extensions?.userAudit?.sessions ?? {};
+  return auditEligibleSessions(run).find((session) => audits[session.id] === undefined);
+}
+
+function auditAggregatePending(run) {
+  if (run.extensionFailures?.userAudit) return false;
+  if (!auditEligibleSessions(run).length) return false;
+  if (nextAuditSession(run)) return false;
+  return run.extensions?.userAudit?.aggregate === undefined;
+}
+
+function ensureUserAuditExtension(run) {
+  run.extensions ??= {};
+  run.extensions.userAudit ??= { sessions: {}, aggregate: undefined, protocolVersion: AUDIT_PROTOCOL_VERSION };
+  return run.extensions.userAudit;
+}
+
+function auditAggregateContext(run) {
+  return {
+    sessions: auditEligibleSessions(run).map((session) => ({
+      id: session.id,
+      sessionId: session.sessionId ?? session.id,
+      source: session.source,
+      date: session.date,
+      projectPath: session.projectPath ?? null,
+      projectLabel: session.projectLabel ?? null,
+      facet: session.facet,
+      findings: run.extensions?.userAudit?.sessions?.[session.id]?.findings ?? []
+    }))
+  };
+}
+
 function recordSemanticFailure(run, taskId, reason) {
   run.failures ??= [];
   run.failures.push({ taskId, reason, at: new Date().toISOString() });
+}
+
+function recordExtensionFailure(run, extension, taskId, reason) {
+  run.extensionFailures ??= {};
+  run.extensionFailures[extension] = { reason, taskId, at: new Date().toISOString() };
+  recordSemanticFailure(run, taskId, reason);
 }
 
 function emptySections() {
@@ -249,12 +294,40 @@ async function resumeActiveTask(runsRoot, run) {
     return { id, kind: 'aggregate_chunk', section, runId: run.id, request, submissionPath };
   }
   const section = /^aggregate:([a-z_]+)$/.exec(id)?.[1];
-  if (!section) throw new Error('Unsupported frozen semantic task.');
-  const direct = createAggregateRequest(section, context);
-  const request = direct.prompt.length > 30_000
-    ? createAggregateRequest(section, { ...context, chunkSummaries: [run.aggregateChunks?.[section]?.at(-1)] })
-    : direct;
-  return { id, kind: 'aggregate', section, runId: run.id, request, submissionPath };
+  if (section) {
+    const direct = createAggregateRequest(section, context);
+    const request = direct.prompt.length > 30_000
+      ? createAggregateRequest(section, { ...context, chunkSummaries: [run.aggregateChunks?.[section]?.at(-1)] })
+      : direct;
+    return { id, kind: 'aggregate', section, runId: run.id, request, submissionPath };
+  }
+  const auditSession = /^audit:session:([a-f0-9]{24})$/.exec(id)?.[1];
+  if (auditSession) {
+    const session = run.sessions.find((candidate) => candidate.id === auditSession);
+    if (!session || session.status !== 'complete') throw new Error('The frozen audit session task is no longer available.');
+    const input = await loadAnalysisInput(session.locator, session.source);
+    if (input.contentHash !== session.contentHash || input.opaqueId !== session.id) {
+      return { kind: 'source_changed', id, runId: run.id, submissionPath, message: 'The source changed after this task was exposed. Mark it failed with reason source_changed, then continue.' };
+    }
+    return {
+      id,
+      kind: 'session_audit',
+      runId: run.id,
+      input,
+      request: createSessionAuditRequest(input),
+      submissionPath
+    };
+  }
+  if (id === 'audit:aggregate') {
+    return {
+      id,
+      kind: 'audit_aggregate',
+      runId: run.id,
+      request: createAuditAggregateRequest(auditAggregateContext(run)),
+      submissionPath
+    };
+  }
+  throw new Error('Unsupported frozen semantic task.');
 }
 
 export async function getSemanticRun({ runsRoot, runId }) {
@@ -302,6 +375,13 @@ export async function semanticSubmissionForTask({ runsRoot, runId, taskId }) {
       const groups = aggregateGroups(section, context);
       if ((run.aggregateChunks?.[section]?.length ?? 0) < groups.length) throw new Error('Aggregate evidence chunks must complete before the final section task.');
     }
+  } else if (id.startsWith('audit:session:')) {
+    if (nextAggregateSection(run)) throw new Error('Baseline aggregate tasks must complete before audit tasks.');
+    if (run.extensionFailures?.userAudit) throw new Error('User audit extension already failed.');
+    const session = nextAuditSession(run);
+    if (!session || `audit:session:${session.id}` !== id) throw new Error('The submitted audit session is not the next pending audit task.');
+  } else if (id === 'audit:aggregate') {
+    if (!auditAggregatePending(run)) throw new Error('The submitted audit aggregate is not the next pending audit task.');
   } else {
     throw new Error('Unsupported semantic task id.');
   }
@@ -375,6 +455,8 @@ export async function prepareSemanticRun({ runsRoot, request, candidates, analyz
     sections: {},
     sectionFailures: {},
     aggregateChunks: {},
+    extensions: { userAudit: { sessions: {}, aggregate: undefined, protocolVersion: AUDIT_PROTOCOL_VERSION } },
+    extensionFailures: {},
     preparationFailures,
     failures: preparationFailures.map((failure) => ({ taskId: null, reason: failure.reason, source: failure.source, at: new Date().toISOString() })),
     eligibility: eligibilitySummary(sessions, preparationFailures),
@@ -406,7 +488,35 @@ export async function nextSemanticTask({ runsRoot, runId }) {
     const session = run.sessions.find((candidate) => candidate.status === 'pending');
     if (!session) {
       const section = nextAggregateSection(run);
-      if (!section) return { kind: 'complete', runId };
+      if (!section) {
+        const auditSession = nextAuditSession(run);
+        if (auditSession) {
+          const input = await loadAnalysisInput(auditSession.locator, auditSession.source);
+          if (input.contentHash !== auditSession.contentHash || input.opaqueId !== auditSession.id) {
+            recordExtensionFailure(run, 'userAudit', `audit:session:${auditSession.id}`, 'source_changed');
+            await writeManifest(runsRoot, run);
+            continue;
+          }
+          return exposeTask(runsRoot, run, {
+            id: `audit:session:${auditSession.id}`,
+            kind: 'session_audit',
+            runId,
+            input,
+            request: createSessionAuditRequest(input),
+            submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+          });
+        }
+        if (auditAggregatePending(run)) {
+          return exposeTask(runsRoot, run, {
+            id: 'audit:aggregate',
+            kind: 'audit_aggregate',
+            runId,
+            request: createAuditAggregateRequest(auditAggregateContext(run)),
+            submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+          });
+        }
+        return { kind: 'complete', runId };
+      }
       const context = aggregateContext(run);
       const parallelSections = AGGREGATE_TASKS.slice(0, -1).filter((name) => run.sections[name] === undefined && run.sectionFailures?.[name] === undefined);
       if (section === AGGREGATE_TASKS[0] && parallelSections.length === AGGREGATE_TASKS.length - 1) {
@@ -570,6 +680,34 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     await writeManifest(runsRoot, run);
     return value;
   }
+  if (String(taskId).startsWith('audit:session:')) {
+    const sessionId = String(taskId).slice('audit:session:'.length);
+    const session = run.sessions.find((candidate) => candidate.id === sessionId);
+    if (!session || session.status !== 'complete' || nextAggregateSection(run) || run.extensionFailures?.userAudit) {
+      throw new Error('Audit session task is missing, out of order, or already complete.');
+    }
+    const expected = nextAuditSession(run);
+    if (!expected || expected.id !== session.id) throw new Error('Audit session task is out of order.');
+    const input = await loadAnalysisInput(session.locator, session.source);
+    if (input.contentHash !== session.contentHash || input.opaqueId !== session.id) {
+      throw new Error('Audit session source changed after prepare.');
+    }
+    const audit = validateSessionAuditResult(result, input);
+    const extension = ensureUserAuditExtension(run);
+    extension.sessions[session.id] = audit;
+    run.activeTask = null;
+    await writeManifest(runsRoot, run);
+    return audit;
+  }
+  if (String(taskId) === 'audit:aggregate') {
+    if (!auditAggregatePending(run)) throw new Error('Audit aggregate task is missing, out of order, or already complete.');
+    const aggregate = validateAuditAggregateResult(result, auditAggregateContext(run));
+    const extension = ensureUserAuditExtension(run);
+    extension.aggregate = aggregate;
+    run.activeTask = null;
+    await writeManifest(runsRoot, run);
+    return aggregate;
+  }
   if (!String(taskId).startsWith('session:')) throw new Error('Unsupported semantic task id.');
   const session = run.sessions.find((candidate) => `session:${candidate.id}` === taskId);
   if (!session || session.status !== 'pending') throw new Error('Semantic session task is missing or already complete.');
@@ -613,10 +751,15 @@ export async function failSemanticTask({ runsRoot, runId, taskId, reason = 'anal
     session.eligibilityReason = reason;
     session.failure = { taskId: id, reason };
     run.eligibility = eligibilitySummary(run.sessions, run.preparationFailures);
+    recordSemanticFailure(run, id, reason);
     if (!run.sessions.some((candidate) => candidate.status === 'pending' || candidate.status === 'complete')) {
       run.sectionFailures ??= {};
       for (const section of AGGREGATE_TASKS) run.sectionFailures[section] ??= { reason: 'no_semantic_evidence' };
+      run.extensionFailures ??= {};
+      run.extensionFailures.userAudit ??= { reason: 'no_semantic_evidence', taskId: id, at: new Date().toISOString() };
     }
+  } else if (id.startsWith('audit:')) {
+    recordExtensionFailure(run, 'userAudit', id, reason);
   } else {
     const section = /^aggregate(?:-chunk)?:([a-z_]+)/.exec(id)?.[1];
     if (!section || !AGGREGATE_TASKS.includes(section)) throw new Error('Unsupported semantic task id.');
@@ -626,8 +769,8 @@ export async function failSemanticTask({ runsRoot, runId, taskId, reason = 'anal
       run.aggregateBatch.ids = run.aggregateBatch.ids.filter((task) => task !== id);
       if (run.aggregateBatch.ids.length === 0) run.aggregateBatch = null;
     }
+    recordSemanticFailure(run, id, reason);
   }
-  recordSemanticFailure(run, id, reason);
   if (run.activeTask?.id === id) run.activeTask = null;
   await writeManifest(runsRoot, run);
   return { taskId: id, reason, status: 'failed' };
@@ -637,11 +780,45 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
   const run = await getSemanticRun({ runsRoot, runId });
   const missing = AGGREGATE_TASKS.filter((section) => run.sections[section] === undefined);
   const unresolved = missing.filter((section) => run.sectionFailures?.[section] === undefined);
-  if (run.sessions.some((session) => session.status === 'pending') || unresolved.length > 0) {
-    throw new Error(`Semantic run is incomplete${unresolved.length ? `; missing sections: ${unresolved.join(', ')}` : ''}.`);
+  const auditUnresolved = Boolean(nextAuditSession(run) || auditAggregatePending(run));
+  if (run.sessions.some((session) => session.status === 'pending') || unresolved.length > 0 || auditUnresolved) {
+    throw new Error(`Semantic run is incomplete${unresolved.length ? `; missing sections: ${unresolved.join(', ')}` : auditUnresolved ? '; user audit extension is incomplete' : ''}.`);
   }
   const eligibleSessions = run.sessions.filter((session) => session.status === 'complete');
   const sessions = eligibleSessions.map((session) => session.metrics);
+  const userAudit = run.extensions?.userAudit;
+  const extensions = {
+    userAudit: run.extensionFailures?.userAudit
+      ? {
+          status: 'incomplete',
+          protocolVersion: userAudit?.protocolVersion ?? AUDIT_PROTOCOL_VERSION,
+          failure: run.extensionFailures.userAudit,
+          sessions: userAudit?.sessions ?? {},
+          aggregate: userAudit?.aggregate ?? null
+        }
+      : userAudit?.aggregate
+        ? {
+            status: 'complete',
+            protocolVersion: userAudit.protocolVersion ?? AUDIT_PROTOCOL_VERSION,
+            sessions: userAudit.sessions ?? {},
+            aggregate: userAudit.aggregate
+          }
+        : eligibleSessions.length
+          ? {
+              status: 'incomplete',
+              protocolVersion: userAudit?.protocolVersion ?? AUDIT_PROTOCOL_VERSION,
+              failure: { reason: 'missing_audit_aggregate' },
+              sessions: userAudit?.sessions ?? {},
+              aggregate: null
+            }
+          : {
+              status: 'skipped',
+              protocolVersion: AUDIT_PROTOCOL_VERSION,
+              reason: 'no_eligible_sessions',
+              sessions: {},
+              aggregate: null
+            }
+  };
   const semantic = {
     analyzer: run.analyzer,
     failures: run.failures,
@@ -662,10 +839,11 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
     requestedRange: run.request.start && run.request.end ? { start: run.request.start, end: run.request.end } : null,
     sourcesScanned: run.diagnostics,
     semantic,
+    extensions,
     eligibility: run.eligibility
   });
   const files = await writeReport(report, outputDirectory);
-  run.status = run.failures?.length ? 'partial' : 'complete';
+  run.status = run.failures?.length || run.extensionFailures?.userAudit ? 'partial' : 'complete';
   run.completedAt = new Date().toISOString();
   run.report = { timestampedHtml: files.timestampedHtml, html: files.html, json: files.json, markdown: files.markdown };
   await writeManifest(runsRoot, run);

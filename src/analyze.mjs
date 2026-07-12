@@ -251,7 +251,7 @@ function buildRecommendations(totals, projects, sourceCount) {
   return recommendations.slice(0, 3);
 }
 
-export function summarizeSessions(sessions, { days = 30, requestedRange = null, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 }, semantic = null, eligibility = null } = {}) {
+export function summarizeSessions(sessions, { days = 30, requestedRange = null, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 }, semantic = null, extensions = null, eligibility = null } = {}) {
   const ordered = [...sessions].sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
   const sourceMap = {};
   const projects = {};
@@ -296,7 +296,10 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
   const incompleteSources = sourcesScanned.filter((source) => !['available', 'empty'].includes(source.coverage));
   const changedDuringRun = Number(eligibility?.reasons?.changed_after_prepare ?? 0);
   const semanticFailures = semantic?.failures ?? [];
-  const dataStatus = incompleteSources.length > 0 || changedDuringRun > 0 || semanticFailures.length > 0 ? 'partial' : 'complete';
+  const extensionFailures = Object.entries(extensions ?? {})
+    .filter(([, value]) => value?.status === 'incomplete' || value?.failure)
+    .map(([name, value]) => ({ extension: name, reason: value.failure?.reason ?? value.reason ?? 'incomplete' }));
+  const dataStatus = incompleteSources.length > 0 || changedDuringRun > 0 || semanticFailures.length > 0 || extensionFailures.length > 0 ? 'partial' : 'complete';
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
@@ -336,7 +339,8 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
       projectFilter,
       eligibility,
       semanticFailures,
-      sectionFailures: semantic?.sectionFailures ?? {}
+      sectionFailures: semantic?.sectionFailures ?? {},
+      extensionFailures
     },
     dateRange,
     totals,
@@ -361,6 +365,7 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
       sectionFailures: semantic?.sectionFailures ?? {},
       sections
     },
+    extensions: extensions ?? {},
     observations: buildObservations(totals, sourceCount, projectEntries, ordered),
     recommendations: buildRecommendations(totals, projectEntries, sourceCount)
   };

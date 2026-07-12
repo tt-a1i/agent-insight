@@ -39,11 +39,47 @@ function eligibilityNote(report) {
 
 function semanticFailureNote(report) {
   const failures = report.coverage?.semanticFailures ?? [];
-  if (!failures.length) return 'No semantic analyzer failures were recorded.';
-  const reasons = Object.entries(failures.reduce((counts, failure) => ({ ...counts, [failure.reason]: (counts[failure.reason] ?? 0) + 1 }), {}))
-    .map(([reason, count]) => `${number(count)} ${reason.replaceAll('_', ' ')}`)
-    .join(', ');
-  return `Semantic coverage is partial: ${reasons}.`;
+  const extensionFailures = report.coverage?.extensionFailures ?? [];
+  const notes = [];
+  if (failures.length) {
+    const reasons = Object.entries(failures.reduce((counts, failure) => ({ ...counts, [failure.reason]: (counts[failure.reason] ?? 0) + 1 }), {}))
+      .map(([reason, count]) => `${number(count)} ${reason.replaceAll('_', ' ')}`)
+      .join(', ');
+    notes.push(`Semantic coverage is partial: ${reasons}.`);
+  } else {
+    notes.push('No semantic analyzer failures were recorded.');
+  }
+  if (extensionFailures.length) {
+    notes.push(`Extension coverage is partial: ${extensionFailures.map((failure) => `${failure.extension} (${failure.reason.replaceAll('_', ' ')})`).join('; ')}.`);
+  }
+  return notes.join(' ');
+}
+
+function renderFindingCard(finding, evidenceSessions = []) {
+  const locators = (finding.locators ?? []).map((locator) => {
+    const session = evidenceSessions.find((entry) => entry.id === locator.sessionId || entry.sessionId === locator.sessionId);
+    const label = session
+      ? [session.sessionId ?? session.id, session.source, session.date, session.projectPath || session.projectLabel].filter(Boolean).join(' · ')
+      : locator.sessionId;
+    return `${label} · messages ${locator.messageIndexes.join(', ')}`;
+  }).join('; ');
+  const quotes = (finding.quotations ?? []).map((quotation) => `<blockquote>${escapeHtml(quotation)}</blockquote>`).join('');
+  const count = finding.occurrenceCount == null ? '' : `<p class="muted">Seen about ${number(finding.occurrenceCount)} time${finding.occurrenceCount === 1 ? '' : 's'}.</p>`;
+  return `<article class="prose-card audit-finding" data-severity="${escapeHtml(finding.severity)}" data-posture="${escapeHtml(finding.evidencePosture)}"><p class="muted">${escapeHtml(finding.category)} · ${escapeHtml(finding.severity)} · ${escapeHtml(finding.evidencePosture.replaceAll('_', ' '))}</p><h3>${escapeHtml(finding.accusation)}</h3><p>${escapeHtml(finding.explanation)}</p>${quotes}<p><strong>Better alternative:</strong> ${escapeHtml(finding.betterAlternative)}</p>${count}<p class="evidence">Evidence: ${escapeHtml(locators || 'unavailable')}</p></article>`;
+}
+
+function renderUserAudit(report) {
+  const audit = report.extensions?.userAudit;
+  if (!audit || audit.status === 'skipped') return '';
+  const evidenceSessions = report.semantic?.sessions ?? [];
+  if (audit.status === 'incomplete') {
+    const reason = audit.failure?.reason ?? audit.reason ?? 'incomplete';
+    return `<section data-extension-section="user_audit"><h2>Three hard truths</h2><div class="empty">User audit extension coverage is incomplete (${escapeHtml(reason.replaceAll('_', ' '))}). Baseline Claude sections above remain available.</div></section>`;
+  }
+  if (audit.status !== 'complete' || !audit.aggregate) return '';
+  const top = audit.aggregate.topThree ?? [];
+  const remaining = audit.aggregate.remaining ?? [];
+  return `<section data-extension-section="user_audit"><h2>Three hard truths</h2><p class="muted">The highest-impact habits worth confronting first.</p>${sectionCards(top, (finding) => renderFindingCard(finding, evidenceSessions))}</section><section data-extension-section="user_audit_all"><h2>All findings</h2><p class="muted">Every remaining distinct issue, severity-ordered.</p>${sectionCards(remaining, (finding) => renderFindingCard(finding, evidenceSessions))}</section>`;
 }
 
 function sourceTable(report) {
@@ -244,7 +280,8 @@ export function renderHtml(report) {
   html = replaceSection(html, '<section><h2>What Helped Most</h2>', '<section id="where-things-go-wrong">', helped);
   const evidenceRows = (report.semantic?.sessions ?? []).map((session) => `<tr><td>${escapeHtml(session.sessionId ?? session.id)}</td><td>${escapeHtml(session.source)}</td><td>${escapeHtml(session.date ?? 'unknown')}</td><td>${escapeHtml(session.projectPath || session.projectLabel || '—')}</td></tr>`).join('');
   const evidenceIndex = `<section><h2>Evidence index</h2><div class="table-wrap"><table><thead><tr><th>Session</th><th>Agent</th><th>Date</th><th>Project</th></tr></thead><tbody>${evidenceRows || '<tr><td colspan="4">No semantic evidence sessions.</td></tr>'}</tbody></table></div>${renderEvidenceQuotations(report)}</section>`;
-  html = html.replace('<section><h2>Read coverage</h2>', `${evidenceIndex}<section><h2>Read coverage</h2><p class="muted">${escapeHtml(semanticFailureNote(report))}</p>`);
+  const userAuditHtml = renderUserAudit(report);
+  html = html.replace('<section><h2>Read coverage</h2>', `${userAuditHtml}${evidenceIndex}<section><h2>Read coverage</h2><p class="muted">${escapeHtml(semanticFailureNote(report))}</p>`);
   const headerClose = html.indexOf('</header>');
   const headerEnd = headerClose < 0 ? -1 : headerClose + '</header>'.length;
   const tocStart = html.indexOf('<nav class="toc"', headerEnd);
