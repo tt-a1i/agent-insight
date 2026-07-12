@@ -98,7 +98,10 @@ test('HTML follows the Claude 2.1.206 insights information architecture in order
   assert.match(html, /Evidence index/);
   assert.match(html, /Please fix the parser now/);
   assert.match(html, /<td>claude-session-a<\/td><td>claude<\/td><td>2026-07-01<\/td><td>\/work\/parser<\/td>/);
-  assert.doesNotMatch(html, /https:\/\//);
+  // Optional font / Mermaid CDN links are allowed; report body must not invent external URLs.
+  const bodyStart = html.indexOf('<body');
+  const bodyHtml = bodyStart >= 0 ? html.slice(bodyStart) : html;
+  assert.doesNotMatch(bodyHtml.replace(/https:\/\/cdn\.jsdelivr\.net\/[^"'>\s]+/g, ''), /https:\/\//);
   assert.equal(compareParityReports(report, report, { candidateHtml: html }).acceptance.structuralParity, true);
 });
 
@@ -236,4 +239,16 @@ test('non-Claude default locale uses Agent Insight brand and Chinese chrome', ()
   assert.match(html, /<h2>并行会话<\/h2>/);
   assert.match(html, /<h2>最有帮助的能力<\/h2>/);
   assert.match(html, /可尝试的能力/);
+});
+
+test('HTML skin uses NewsLiquid editorial tokens', () => {
+  const html = renderHtml(summarizeSessions([session()], { semantic: semantic() }));
+  assert.match(html, /--bg:#FBFAF7/);
+  assert.match(html, /font-family:var\(--serif\)/);
+  assert.match(html, /header class="mast"/);
+  assert.match(html, /class="eyebrow"/);
+  assert.match(html, /nav class="toc"/);
+  assert.match(html, /class="wordmark"/);
+  assert.match(html, /\.mermaid\{/);
+  assert.match(html, /cdn\.jsdelivr\.net\/npm\/mermaid/);
 });

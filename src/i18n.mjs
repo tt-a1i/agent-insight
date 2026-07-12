@@ -6,6 +6,8 @@ const EN_CLAUDE = {
   brandTitle: 'Claude Code Insights',
   htmlLang: 'en',
   numberLocale: 'en-US',
+  eyebrow: 'Coding-agent usage insights',
+  navAria: 'Report navigation',
   subtitle: (messages, sessions, discoveredSuffix, range) => `${messages} messages across ${sessions} sessions${discoveredSuffix} | ${range}`,
   noEligibleSessions: 'No eligible sessions',
   analyzer: (host, model) => `Analyzer ${host} / ${model}`,
@@ -133,6 +135,7 @@ const EN_CLAUDE = {
 const EN_AGENT = {
   ...EN_CLAUDE,
   brandTitle: 'Agent Insight',
+  eyebrow: 'Agent usage insights',
   sections: {
     ...EN_CLAUDE.sections,
     howYouUse: 'How You Use Agents',
@@ -156,6 +159,8 @@ const ZH = {
   brandTitle: 'Agent Insight',
   htmlLang: 'zh-CN',
   numberLocale: 'zh-CN',
+  eyebrow: 'Agent 使用洞察',
+  navAria: '报告导航',
   subtitle: (messages, sessions, discoveredSuffix, range) => `${messages} 条消息 · ${sessions} 个会话${discoveredSuffix} | ${range}`,
   noEligibleSessions: '没有合格会话',
   analyzer: (host, model) => `分析器 ${host} / ${model}`,
