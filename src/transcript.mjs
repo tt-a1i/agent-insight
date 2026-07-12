@@ -6,17 +6,19 @@ import { Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { basename, extname } from 'node:path';
 import { claudeTopologyNode, selectClaudeLeafUuids } from './parse.mjs';
+import { authorshipCoverageNote, classifyAnalysisRole } from './authorship.mjs';
 
 function firstString(...values) {
   return values.find((value) => typeof value === 'string' && value.trim())?.trim() ?? null;
 }
 
 function addMessage(messages, role, text, limit) {
-  if (typeof text !== 'string' || !text.trim()) return;
+  if (typeof text !== 'string' || !text.trim()) return false;
   messages.push({ index: messages.length + 1, role, text: text.trim().slice(0, limit) });
+  return true;
 }
 
-function collectContent(messages, role, content) {
+function collectAssistantOrTool(messages, role, content) {
   const limit = role === 'user' ? 500 : 300;
   if (typeof content === 'string') {
     addMessage(messages, role, content, limit);
@@ -48,15 +50,17 @@ function observeRecord(state, record) {
     if (!state.date) state.date = new Date(value).toISOString().slice(0, 10);
   }
 
-  const role = String(item.role ?? record.role ?? '').toLowerCase();
-  if (role === 'user' || role === 'assistant') {
-    const before = state.messages.length;
-    collectContent(state.messages, role, item.content);
-    if (role === 'user' && state.messages.slice(before).some((entry) => entry.role === 'user')) state.userMessageCount += 1;
+  const classified = classifyAnalysisRole(record);
+  if (classified.role === 'user') {
+    if (addMessage(state.messages, 'user', classified.text, 500)) state.userMessageCount += 1;
+    return;
   }
-  const itemType = String(item.type ?? '').toLowerCase();
-  if (/(tool_use|tool_call|function_call|custom_tool_call)/.test(itemType)) {
-    addMessage(state.messages, 'tool', firstString(item.name, item.tool_name, item.function?.name, 'unknown'), 120);
+  if (classified.role === 'assistant') {
+    collectAssistantOrTool(state.messages, 'assistant', classified.content);
+    return;
+  }
+  if (classified.role === 'tool') {
+    addMessage(state.messages, 'tool', classified.name, 120);
   }
 }
 
@@ -121,6 +125,7 @@ export async function extractAnalysisInput(file, source, {
   const { state } = snapshot;
   if (state.messages.length === 0) throw new Error('Transcript contains no analyzable user or assistant messages.');
   const sessionKey = state.sessionId ?? basename(filePath, extname(filePath));
+  const coverageNote = authorshipCoverageNote(source);
   return {
     source,
     sessionId: sessionKey,
@@ -131,6 +136,10 @@ export async function extractAnalysisInput(file, source, {
     projectLabel: state.project ? basename(state.project.replace(/[\\/]+$/, '')) : 'unknown',
     userMessageCount: state.userMessageCount,
     durationMinutes: state.firstTimestamp === null || state.lastTimestamp === null ? 0 : Math.round((state.lastTimestamp - state.firstTimestamp) / 60_000),
-    messages: state.messages
+    messages: state.messages,
+    authorship: {
+      filter: 'genuine-user-v1',
+      coverageNote
+    }
   };
 }

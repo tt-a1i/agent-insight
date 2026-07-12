@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 import { parseSessionFile } from './parse.mjs';
 import { collectOpenCodeSessions } from './opencode.mjs';
+import { authorshipCoverageNote } from './authorship.mjs';
 
 export const SUPPORTED_SOURCES = ['claude', 'codex', 'cursor', 'opencode', 'pi', 'groq', 'generic'];
 const AUTO_SOURCES = ['claude', 'codex', 'cursor', 'opencode', 'pi', 'groq'];
@@ -324,6 +325,7 @@ export async function collectSessions({
     const { sessions, failures } = await parseFiles(selectedFiles.files, source, { maxBytes: maxFileBytes, maxRecords, maxRecordBytes });
     const sessionsWithinWindow = sessions.filter((session) => sessionIsWithinWindow(session, { days, now, start, end }));
     allSessions.push(...sessions);
+    const authorshipNote = authorshipCoverageNote(source);
     diagnostics.push({
       source,
       label: adapter.label,
@@ -341,6 +343,7 @@ export async function collectSessions({
       filesSkipped: failures.parse + failures.tooLarge,
       filesPartial: failures.partial,
       filesTooLarge: failures.tooLarge,
+      warning: authorshipNote || undefined,
       coverage: readableRoots.length === 0
         ? 'not_found'
         : (failures.parse || failures.partial || failures.tooLarge || selectedFiles.filesLimited || discoveryTruncated || discoveryErrors || selectedFiles.statErrors)

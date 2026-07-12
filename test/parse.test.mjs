@@ -37,12 +37,12 @@ test('parses Codex response_item records', async () => {
 test('extracts Claude 2.1.206 deterministic insights metrics', async () => {
   const session = await parseSessionFile(fixture('claude-parity.jsonl'), 'claude');
 
-  assert.equal(session.userMessages, 2);
+  assert.equal(session.userMessages, 3);
   assert.equal(session.assistantMessages, 2);
   assert.equal(session.gitCommits, 1);
   assert.equal(session.gitPushes, 1);
   assert.equal(session.userInterruptions, 1);
-  assert.deepEqual(session.userResponseTimes, [10]);
+  assert.deepEqual(session.userResponseTimes, [5, 10]);
   assert.deepEqual(session.toolErrorCategories, { 'Command Failed': 1 });
   assert.equal(session.usesTaskAgent, true);
   assert.equal(session.usesMcp, true);
@@ -52,9 +52,10 @@ test('extracts Claude 2.1.206 deterministic insights metrics', async () => {
   assert.equal(session.linesRemoved, 1);
   assert.equal(session.filesModified, 1);
   assert.deepEqual(session.languages, { TypeScript: 1 });
-  assert.deepEqual(session.messageHours, { 9: 2 });
+  assert.deepEqual(session.messageHours, { 9: 3 });
   assert.deepEqual(session.userMessageTimestamps, [
     '2026-07-03T09:00:00.000Z',
+    '2026-07-03T09:02:05.000Z',
     '2026-07-03T09:02:10.000Z'
   ]);
 });

@@ -258,6 +258,8 @@ pass.
   There is no hidden provider fallback or fabricated completion.
 - Cursor collection is experimental and excludes unsupported private formats,
   remote/background chats, and nested subagent transcripts by default.
+  Authorship filtering for Cursor is best-effort and remains an explicit
+  coverage limitation.
 - OpenCode's public session list intentionally covers root sessions only;
   child/fork sessions are represented as a coverage limitation.
 - Local retention policies, removed transcripts, read permissions, file-size

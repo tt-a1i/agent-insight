@@ -59,13 +59,13 @@ test('report exposes the Claude 2.1.206 deterministic and semantic aggregate con
   assert.equal(report.parity.structuralStatus, 'partial');
   assert.equal(report.insights.totalSessions, 1);
   assert.equal(report.insights.sessionsWithFacets, 1);
-  assert.equal(report.insights.totalMessages, 2);
+  assert.equal(report.insights.totalMessages, 3);
   assert.equal(report.insights.gitCommits, 1);
   assert.equal(report.insights.gitPushes, 1);
   assert.equal(report.insights.totalInterruptions, 1);
   assert.equal(report.insights.totalToolErrors, 1);
   assert.equal(report.insights.medianResponseTime, 10);
-  assert.equal(report.insights.averageResponseTime, 10);
+  assert.equal(report.insights.averageResponseTime, 7.5);
   assert.equal(report.insights.sessionsUsingTaskAgent, 1);
   assert.equal(report.insights.sessionsUsingMcp, 1);
   assert.equal(report.insights.sessionsUsingWebSearch, 1);

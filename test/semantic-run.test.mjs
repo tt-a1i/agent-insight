@@ -28,7 +28,7 @@ test('semantic run exposes transcript only in the next task and persists only a 
   assert.equal(stored.includes('I will fix and verify it'), false);
   assert.equal(JSON.parse(stored).sessions[0].projectPath, '/work/parity');
   assert.equal(JSON.parse(stored).sessions[0].sessionId, 'claude-parity');
-  assert.equal(JSON.parse(stored).sessions[0].metrics.userMessages, 2);
+  assert.equal(JSON.parse(stored).sessions[0].metrics.userMessages, 3);
   assert.equal((await stat(run.directory)).mode & 0o777, 0o700);
   assert.equal((await stat(run.manifestPath)).mode & 0o777, 0o600);
 
@@ -66,7 +66,7 @@ test('semantic run exposes transcript only in the next task and persists only a 
   assert.equal(aggregate.kind, 'aggregate_batch');
   const projectTask = aggregate.tasks.find((task) => task.section === 'project_areas');
   assert.equal(projectTask.request.task, 'project_areas');
-  assert.match(projectTask.request.prompt, /"totalMessages":2/);
+  assert.match(projectTask.request.prompt, /"totalMessages":3/);
   assert.equal(JSON.stringify(aggregate).includes('Fix the broken parser'), false);
   await ingestSemanticResult({
     runsRoot,

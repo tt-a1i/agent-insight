@@ -2,6 +2,7 @@ import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
+import { extractGenuineUserText } from './authorship.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,11 +29,16 @@ export function openCodeAnalysisInput(document) {
   let userMessageCount = 0;
   for (const message of document?.messages ?? []) {
     const role = String(message?.info?.role ?? '').toLowerCase();
+    if (role === 'system' || role === 'developer') continue;
     let userText = false;
     for (const part of message?.parts ?? []) {
-      if (part?.type === 'text' && (role === 'user' || role === 'assistant')) {
-        const added = addAnalysisMessage(messages, role, part.text, role === 'user' ? 500 : 300);
-        if (role === 'user') userText ||= added;
+      if (part?.type === 'text' && role === 'assistant') {
+        addAnalysisMessage(messages, 'assistant', part.text, 300);
+      }
+      if (part?.type === 'text' && role === 'user') {
+        const genuine = extractGenuineUserText(part.text);
+        const added = genuine ? addAnalysisMessage(messages, 'user', genuine, 500) : false;
+        if (added) userText = true;
       }
       if (part?.type === 'tool') addAnalysisMessage(messages, 'tool', part.tool ?? 'unknown', 120);
     }
@@ -52,7 +58,8 @@ export function openCodeAnalysisInput(document) {
     projectLabel: info.directory ? basename(String(info.directory).replace(/[\\/]+$/, '')) : 'unknown',
     userMessageCount,
     durationMinutes: Number.isFinite(created) && Number.isFinite(updated) && updated >= created ? Math.round((updated - created) / 60_000) : 0,
-    messages
+    messages,
+    authorship: { filter: 'genuine-user-v1', coverageNote: null }
   };
 }
 
