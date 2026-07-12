@@ -1,80 +1,80 @@
 # Agent Insight
 
-Agent Insight is a local-first, cross-agent implementation of an insights
-command for coding agents. Its first goal is to align with the observable
-behavior of **Claude Code 2.1.206 `/insights`**; its second goal is to exceed
-that baseline transparently when a cross-agent workflow needs stronger
-coverage, choice, and evidence-bearing audit detail.
+**One fused coding-agent report: Claude-compatible Insights plus a sharp, evidence-backed audit of how you work with agents.**
 
-The shared command is **`/agent-insights`**. It deliberately does not reuse
-`/insights`, which Claude Code already owns.
+Agent Insight analyzes local session history from Claude Code, Codex, Cursor, OpenCode, and Pi.
 
-> The compatibility baseline and every intentional difference are specified in
-> [the Claude Code 2.1.206 parity contract](docs/parity/claude-2.1.206.md).
+Semantic work stays with the model already selected in the invoking host. Agent Insight never silently switches providers or starts another agent CLI.
 
-## What happens when you run it
+The project has two goals:
 
-Agent Insight has two modes:
+1. Reproduce the observable Claude Code 2.1.206 `/insights` baseline.
+2. Extend that baseline with cross-agent scope, explicit time ranges, honest coverage, resumable execution, and a user-audit extension.
 
-1. **Semantic Insights** is the one-shot fused workflow. It uses the *current
-   host agent's configured model* to analyze selected local sessions and
-   produce one evidence-backed report: Claude-compatible baseline sections
-   plus sharp user-audit extensions. There is no cross-run facet cache;
-   every fresh invocation re-analyzes.
-2. **Deterministic local report** is a no-model fallback. It aggregates local
-   metadata only, runs fully locally, and never makes a model or network call.
+The shared command is `/agent-insights`. Codex exposes the same workflow as `$agent-insights`. Agent Insight does not replace Claude Code's built-in `/insights` command.
 
-Every Semantic Insights invocation asks two fresh questions; it never silently
-reuses a prior choice:
+> The exact baseline and every intentional extension are defined in the [Claude Code 2.1.206 parity contract](docs/parity/claude-2.1.206.md).
 
-1. **Agent scope** — current agent (default), all agents, or selected agents.
-2. **Time range** — 7 days, 30 days (default), 90 days, all available history,
-   or a custom inclusive start/end date.
+## Why Agent Insight
 
-Explicit CLI flags are the non-interactive equivalent of those choices.
+- **One report, not two tools:** Claude-compatible baseline sections and the user audit are generated in one run.
+- **One workflow across agents:** analyze the current agent, selected agents, or every supported source.
+- **Current-host model ownership:** no hidden provider fallback and no nested agent process.
+- **Fresh analysis every invocation:** there is no cross-run semantic cache.
+- **Concrete evidence:** findings may use verified quotations, project paths, dates, agent identity, and session locators.
+- **Honest incomplete states:** unavailable sources, caps, changed transcripts, analyzer failures, and incomplete extensions remain visible.
+- **Resumable checkpoints:** completed tasks in an active run are not repeated after interruption.
+- **Bounded prompts:** long sessions and large aggregates use rolling derived chunks.
 
-```text
-/agent-insights
-      |
-      +-- choose scope and time range
-      |
-      +-- prepare       discover selected sessions and create a resumable run
-      |
-      +-- semantic next request exactly one current-host-model task
-      |                 (session facets → baseline aggregates →
-      |                  session_audit → audit_aggregate)
-      |
-      +-- ingest|fail   validate and persist, or record a partial failure
-      |       ^
-      |       | repeat until the fused task loop is complete
-      |
-      +-- finalize      render one fused HTML/MD/JSON report
-```
+## What the fused report contains
 
-The invoking host owns semantic work. Claude Code uses its current Claude
-model; Codex uses its current Codex model; Cursor uses its current Cursor
-model; OpenCode uses its active provider/model; and Pi uses its active
-provider/model. Agent Insight does not silently start another agent CLI or
-switch providers to complete a semantic task.
+### Claude-compatible baseline
 
-## Installation
+- At a Glance
+- What You Work On
+- What You Wanted and Top Tools Used
+- Languages and Session Types
+- How You Use Claude Code
+- Response-time and time-of-day patterns
+- Multi-Clauding / parallel-session usage
+- Impressive workflows and primary successes
+- Friction, inferred satisfaction, and tool errors
+- Existing features to try
+- New usage patterns and longer-horizon opportunities
 
-Node.js 20 or newer is required. From this repository:
+### Agent Insight user-audit extension
+
+- **Three hard truths:** the highest-impact interaction habits to confront first.
+- **All findings:** every remaining distinct issue, ordered by severity.
+- **Habits that undercut you:** recurring self-defeating phrases and patterns, deduplicated by intent.
+- **Habits worth keeping:** effective interaction habits supported by evidence.
+- **Automation candidates:** repeated workflows that may deserve a Skill, command, prompt template, or automation.
+- **One highest-leverage change:** one concrete improvement without streaks, trackers, or longitudinal homework.
+
+The audit considers genuine user-authored messages only. System injections, tool results, and machine-generated markup are excluded before audit analysis.
+
+Audit findings must cite real message indexes and known sessions. Claimed quotations must be verbatim substrings of the selected user messages.
+
+The audit rejects medical, intelligence, moral, and unrelated personality judgments. Bold inferences are labelled and cannot use unsupported absolute certainty.
+
+Automation candidates are advisory. Report generation never writes a Skill, command, prompt template, automation, or host configuration.
+
+## Three-minute quick start
+
+Requirements: Node.js 20 or newer and at least one supported coding agent.
 
 ```bash
+git clone https://github.com/tt-a1i/agent-insight.git
+cd agent-insight
 npm test
 npm link
 agent-insight doctor
 ```
 
-`agent-insight` must remain on the host agent's `PATH`: the installed host
-command invokes it from the current project root.
-
-Install the bridge you want to use. The command writes only that host's local
-command/skill/extension file and refuses to overwrite an existing file unless
-you pass `--force`.
+Install a bridge into the current project:
 
 ```bash
+# Pick one or install several.
 agent-insight install --agent claude   --scope project
 agent-insight install --agent codex    --scope project
 agent-insight install --agent cursor   --scope project
@@ -82,111 +82,166 @@ agent-insight install --agent opencode --scope project
 agent-insight install --agent pi       --scope project
 ```
 
-`--scope user` is supported for Claude, Codex, OpenCode, and Pi. Cursor custom
-commands are project-scoped. Pi loads a newly installed extension after
-`/reload` (or a restart) when it is already open.
+Invoke the installed command:
+
+| Host | Command |
+| --- | --- |
+| Claude Code | `/agent-insights` |
+| Codex | `$agent-insights` |
+| Cursor | `/agent-insights` |
+| OpenCode | `/agent-insights` |
+| Pi | `/agent-insights` |
+
+Every invocation asks for agent scope and time range. Answers are not reused from an earlier report, and no cost estimate is shown.
+
+## Installation scopes
+
+`--scope project` installs only into the current project. Existing files and symbolic-link targets are protected; replacement requires `--force`, and installation refuses symlink paths that escape the requested scope.
+
+`--scope user` is supported for Claude Code, Codex, OpenCode, and Pi. Cursor custom commands are project-scoped.
+
+Pi needs `/reload` or a restart after installation when it is already running. The `agent-insight` executable must remain available on the host agent's `PATH`.
 
 ## Host and source support
 
-| Host / source | Host command surface | Semantic model owner | Collection boundary |
+| Host / source | Installed surface | Semantic owner | Collection boundary |
 | --- | --- | --- | --- |
-| Claude Code | `.claude/commands/agent-insights.md` → `/agent-insights` | Current Claude Code model | Native Claude primary-session JSONL. `CLAUDE_CONFIG_DIR` is honored; nested subagent journals are excluded by default. |
-| Codex | `.agents/skills/agent-insights/SKILL.md` → `$agent-insights` | Current Codex model | Native Codex session JSONL. `CODEX_HOME` is honored, including `archived_sessions`. |
-| Cursor | `.cursor/commands/agent-insights.md` → `/agent-insights` | Current Cursor model | Experimental local Agent transcript JSONL only. Private storage formats and remote/background chats are not promised. |
-| OpenCode | `.opencode/commands/agent-insights.md` → `/agent-insights` | Current OpenCode provider/model | Official `opencode session list` plus sanitized export. The public list is root-session-only. |
-| Pi | `.pi/extensions/agent-insights.ts` → `/agent-insights` | Current Pi provider/model | Local Pi session JSONL. `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` are honored. |
-| Groq | None | Not a slash-command host | Provider/import-only. Use an explicit export or view Groq as the provider behind a supported host such as Pi or OpenCode. |
+| Claude Code | `.claude/commands/agent-insights.md` | Current Claude model | Primary local JSONL under `${CLAUDE_CONFIG_DIR:-~/.claude}/projects`; nested subagent journals excluded by default. |
+| Codex | `.agents/skills/agent-insights/SKILL.md` | Current Codex model | Native sessions under `CODEX_HOME`, including `archived_sessions`. |
+| Cursor | `.cursor/commands/agent-insights.md` | Current Cursor model | Experimental local Agent transcript JSONL; authorship filtering is best-effort and remote/background formats are not promised. |
+| OpenCode | `.opencode/commands/agent-insights.md` | Active provider/model | Official `opencode session list` and sanitized export; public listing is root-session-only. |
+| Pi | `.pi/extensions/agent-insights.ts` | Active provider/model | Local Pi JSONL; `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` are honored. |
+| Groq | Import-only | Host using Groq | Groq is a provider, not a slash-command host. Use it behind OpenCode/Pi or import an explicit export. |
 
-Groq is intentionally not accepted by `agent-insight install --agent ...`:
-it is an inference provider, not a general coding-agent command host.
+Groq is intentionally rejected by `agent-insight install --agent ...` because it is not a general coding-agent command host.
 
-## Run Semantic Insights
+## How the fused run works
 
-From a supported host, invoke its installed `/agent-insights` command. The
-bridge asks the scope and time-range questions, then drives the resumable
-workflow with that host's current model.
+```text
+/agent-insights
+      |
+      +-- ask scope and time range
+      |
+      +-- prepare
+      |     discover sessions, freeze coverage, create run checkpoint
+      |
+      +-- session facets
+      |     next -> current host model -> ingest|fail
+      |     long sessions use rolling 25k-character chunks
+      |
+      +-- Claude baseline aggregates
+      |     seven independent sections may be analyzed in parallel
+      |     results are ingested one at a time
+      |     At a Glance is synthesized after them
+      |
+      +-- per-session user audits
+      |     genuine user-authored messages only
+      |
+      +-- cross-session audit aggregate
+      |     hard truths, strengths, patterns, automation, leverage
+      |
+      +-- finalize
+            one fused HTML + Markdown + JSON report
+```
 
-For a terminal-only flow, let the CLI ask the same questions:
+Every semantic step is bound to the host and model recorded during `prepare`. A different host or model cannot ingest into that run.
+
+If a task fails after a safe retry, `semantic fail` records the failure and advances the state machine. A failed audit extension can still finalize a usable Claude baseline with explicit incomplete-extension coverage.
+
+If a transcript changes after a task is exposed, the run preserves the frozen task boundary. The task can be failed as `source_changed`, after which the remaining work continues.
+
+## Terminal and automation workflow
+
+The installed host command is the normal entry point. A terminal-only invocation asks the same scope and time questions:
 
 ```bash
 agent-insight insights --host codex
 ```
 
-For automation or a host integration, make the choices explicit:
+Automation should bind the run to a host and exact model:
 
 ```bash
-# Current Codex sessions from the last 30 days.
-agent-insight prepare --host codex --source codex --days 30
+agent-insight prepare \
+  --host codex \
+  --model <exact-model-id-or-unknown> \
+  --source codex \
+  --days 30
 
-# Claude and Codex, 90 days.
-agent-insight prepare --host codex --source claude,codex --days 90
-
-# All supported agent sources, all available local history.
-agent-insight prepare --host pi --source claude,codex,cursor,opencode,pi --all
-
-# A selected scope with an explicit inclusive date range.
-agent-insight prepare --host claude --source claude,cursor --start 2026-06-01 --end 2026-06-30
+agent-insight prepare \
+  --host codex \
+  --model <exact-model-id-or-unknown> \
+  --source claude,codex \
+  --start 2026-06-01 \
+  --end 2026-06-30
 ```
 
-`prepare` prints a run ID. The current host model then completes one validated
-task at a time through the fused baseline-plus-audit loop:
+`prepare` returns a run ID. Continue with the same host/model identity:
 
 ```bash
-agent-insight semantic next --run <run-id> --host <host> --model <exact-model-id-or-unknown>
-# Analyze the returned request with the current host model. Write only its
-# required JSON result to the returned submissionPath.
-agent-insight semantic ingest --run <run-id> --task <task-id> --host <host> --model <same-model-id>
-# On a lasting analyzer/schema failure after one safe retry:
-agent-insight semantic fail --run <run-id> --task <task-id> --reason analyzer_failure --host <host> --model <same-model-id>
+agent-insight semantic next \
+  --run <run-id> \
+  --host <host> \
+  --model <same-model-id>
 
-# Repeat next → host analysis → ingest|fail until next returns kind: complete.
-agent-insight semantic finalize --run <run-id> --host <host> --model <same-model-id>
+# Analyze the returned request with the current host model and write its JSON
+# result to the exact submissionPath. aggregate_batch tasks may be analyzed in
+# parallel, but their results must be ingested one at a time.
+
+agent-insight semantic ingest \
+  --run <run-id> \
+  --task <task-id> \
+  --host <host> \
+  --model <same-model-id>
+
+agent-insight semantic finalize \
+  --run <run-id> \
+  --host <host> \
+  --model <same-model-id>
 ```
 
-`finalize` refuses incomplete runs. On success it prints a `file://` link to
-the timestamped fused HTML report and also writes the stable `report.html`,
-`report.md`, and `report.json` artifacts under `~/.agent-insight/usage-data/`
-by default. Keep the run ID after an error: the same run can be resumed rather
-than guessed, skipped, or silently re-analyzed by a different model.
+Record an unrecoverable task and continue:
 
-## Run checkpoints and evidence policy
+```bash
+agent-insight semantic fail \
+  --run <run-id> \
+  --task <task-id> \
+  --reason invalid_analyzer_response \
+  --host <host> \
+  --model <same-model-id>
+```
 
-Semantic analysis needs transcript text transiently so the selected host model
-can reason about goals, outcomes, friction, and evidence. That text is
-provided in the task sent to the invoking host. Final reports may persist
-representative user quotations, absolute project paths, agent identity, dates,
-and session identifiers as concrete evidence labels. Complete transcripts and
-tool payloads are not copied into the report.
+Supported failure reasons are `analyzer_failure`, `invalid_analyzer_response`, `safety_limit`, and `source_changed`.
 
-Independent report invocations always request fresh semantic analysis, even
-when the corpus and model are unchanged. Within one active run, progress is
-checkpointed under `~/.agent-insight/runs/<run-id>/`: completed tasks are not
-redone, and an interrupted active task can be resumed with `semantic next`.
-Run and report files are private (`0600`) in private directories (`0700`).
-`finalize` removes transient submission files under the run directory while
-keeping `manifest.json` and the final HTML/MD/JSON artifacts.
+Reports default to `~/.agent-insight/usage-data/`. Keep the run ID after an interruption; `semantic next` returns the same frozen pending task when it is still safe to resume.
 
-Large sessions and aggregate evidence are processed through bounded derived
-chunks (25,000-character session chunks; direct semantic prompts switch to
-chunked processing above 30,000 characters). The chunks are analyzed by the
-same current host model, and only validated derived summaries are persisted.
+## Evidence and checkpoint policy
 
-An imported Groq or generic export follows the same rule: it is parsed once
-and reduced to an anonymized metadata snapshot. The raw export is never copied
-into `~/.agent-insight`.
+Semantic analysis requires selected transcript text to be sent transiently to the invoking host model.
+
+> **Reports are evidence-bearing, not content-redacted.** They may persist representative user quotations, absolute project paths, agent identity, dates, and session identifiers. Review a report before sharing it.
+
+Complete transcripts, tool arguments, and tool results are not copied into reports. Filesystem and parser safety remain enforced, but content-privacy filtering is intentionally disabled for evidence-bearing output.
+
+Independent invocations always request fresh semantic analysis, even when corpus and model are unchanged. There is no cross-run facet cache and no cache command.
+
+Within one active run, progress is checkpointed under `~/.agent-insight/runs/<run-id>/`. Completed tasks are not repeated, and an interrupted active task can be reconstructed by `semantic next`.
+
+Run and report files use mode `0600` inside private `0700` directories. `finalize` removes transient submission files while retaining the run manifest and final report artifacts.
+
+The invoking host/provider still applies its own privacy, retention, and account policies. Agent Insight does not independently upload transcripts to another service.
+
+## Imported exports
+
+A Groq or generic export is read once and reduced to an anonymized metadata snapshot. The raw export is not copied into `~/.agent-insight`.
 
 ```bash
 agent-insight import --source groq --from exported-conversations.jsonl
 agent-insight report --source groq --all
 ```
 
-## Deterministic local-only fallback
+## Deterministic local-only report
 
-Use `report` when a semantic host-model pass is unavailable, unnecessary, or
-not authorized. It is deterministic and local-only: it streams allowlisted
-local transcript stores, derives aggregate metadata, and writes HTML,
-Markdown, JSON, and a narrative handoff prompt without calling an LLM,
-uploading data, sending telemetry, or retaining raw transcript content.
+Use `report` when semantic analysis is unavailable or not authorized. This mode reads allowlisted local sources and writes derived metadata without calling an LLM, uploading data, sending telemetry, or retaining raw transcript content.
 
 ```bash
 agent-insight report
@@ -195,82 +250,78 @@ agent-insight report --source claude --include-subagents --all
 agent-insight report --source cursor --max-sessions 500 --max-file-mb 64
 ```
 
-The default output is `~/.agent-insight/latest/`:
+The default deterministic output is `~/.agent-insight/latest/`:
 
 ```bash
 open ~/.agent-insight/latest/report.html
 ```
 
-Read coverage is part of every report. It distinguishes unavailable, empty,
-partial, and available data, and exposes discovery caps, selection limits,
-parse failures, and partial files rather than treating a bounded scan as full
-history.
+Every report distinguishes unavailable, empty, partial, and available sources. It also exposes discovery caps, parse failures, changed inputs, exclusions, analyzer failures, and extension failures.
 
-## Parity validation
+## Claude Code 2.1.206 parity status
 
-The public parity harness compares all required report sections and the full
-deterministic metric surface. It can also generate an identity-blinded A/B
-bundle for the semantic acceptance gate (tie or better in at least 80% of
-section judgments).
+| Surface | In-repo status | What remains |
+| --- | --- | --- |
+| Baseline structural contract | Fixture-tested | A trusted independent Claude 2.1.206 reference is still required for live certification. |
+| Deterministic metrics | Fixture-tested | Live score `1` cannot be claimed without the same trusted reference corpus. |
+| Blind semantic baseline | Harness implemented | Tie-or-better in at least 80% of blinded sections remains blocked on the reference corpus. |
+| User-audit extension | Implemented outside baseline scoring | Audit fields and trailing HTML sections are excluded from Claude baseline structural, deterministic, and blind-semantic scoring. |
+| Host wiring | Isolated CLI smoke captured | Full in-host UI invocation remains outstanding across the five-host matrix. |
 
-The reference input must be an independently captured and normalized Claude
-Code 2.1.206 report carrying `claude-code` provenance, the exact version, and
-a capture hash. Comparing Agent Insight with itself cannot certify parity.
+Fixture tests prove harness behavior; they are not live Claude parity certification. Self-comparing two Agent Insight reports is also not certification.
+
+The current evidence and blockers are documented in [parity acceptance](docs/parity/acceptance.md).
 
 ```bash
 agent-insight parity compare \
   --reference claude-reference/report.json \
   --reference-sha256 <independently-recorded-sha256> \
   --candidate ~/.agent-insight/usage-data/report.json \
+  --candidate-html ~/.agent-insight/usage-data/report.html \
   --output comparison.json \
   --blind-output semantic-review.json \
   --seed <private-random-seed>
 
-# After an identity-blind reviewer fills each item.rating with A, B, or tie:
+# After an identity-blind reviewer fills each rating with A, B, or tie:
 agent-insight parity evaluate \
   --review semantic-review.json \
   --seed <same-private-random-seed> \
   --output semantic-result.json
 ```
 
-A passing machine comparison requires `structural.score: 1` and
-`deterministic.score: 1`. Semantic quality remains a blind review rather than
-being mislabeled as an exact string comparison. Overall acceptance is closed
-until the trusted-reference, structural, deterministic, and semantic gates all
-pass.
+Machine acceptance requires a trusted reference hash, `structural.score: 1`, and `deterministic.score: 1`. Semantic acceptance requires tie-or-better in at least 80% of baseline sections.
 
-See [parity acceptance](docs/parity/acceptance.md) for extension-exclusion
-rules, reproducible commands, artifact expectations, and honest blockers when
-an independent Claude 2.1.206 reference or live hosts are unavailable. Fixture
-self-comparison is a gate test only — never treat it as live parity
-certification.
+## Known limits
 
-## Known limits and deliberate boundaries
+- Cursor collection and authorship filtering are experimental; unsupported private formats and remote/background chats are excluded.
+- OpenCode's public session list covers root sessions; child/fork coverage is reported as limited.
+- Removed transcripts, permissions, retention policies, and explicit safety limits can make a selected range incomplete.
+- Very large inputs use bounded rolling summaries. An input that cannot fit the safety envelope fails visibly instead of being silently sampled.
+- Semantic reports intentionally retain representative evidence and must be reviewed before external sharing.
+- Deterministic metadata cannot prove intent, satisfaction, or code quality; those claims require semantic analysis and evidence.
+- Full live acceptance still needs an independent Claude 2.1.206 reference and in-host UI smoke across all supported hosts.
 
-- Claude Code parity is a compatibility target, not a claim that every vendor
-  stores sessions in the same format. See the
-  [parity contract](docs/parity/claude-2.1.206.md) for its exact 1:1 and
-  transparent-exceed requirements.
-- Cross-agent semantic analysis requires the active host to execute the fused
-  `next → analyze → ingest|fail` loop (baseline plus audit extensions) and
-  produce the protocol's validated JSON. There is no hidden provider fallback,
-  cross-run cache, or fabricated completion.
-- Cursor collection is experimental and excludes unsupported private formats,
-  remote/background chats, and nested subagent transcripts by default.
-  Authorship filtering for Cursor is best-effort and remains an explicit
-  coverage limitation.
-- OpenCode's public session list intentionally covers root sessions only;
-  child/fork sessions are represented as a coverage limitation.
-- Local retention policies, removed transcripts, read permissions, file-size
-  caps, and explicit discovery/session limits can make a selected range
-  incomplete. The report must show that state; do not compare it as if it were
-  complete.
-- Deterministic reports measure metadata, not intent, satisfaction, or code
-  quality. Semantic reports separate measured metrics from model inference and
-  may include representative quotations plus concrete session and project labels.
-- Sending a semantic task to the current host model is still subject to that
-  host and provider's own privacy, retention, and account policies. Agent
-  Insight itself does not upload transcripts to a third-party service.
+## Troubleshooting
+
+### `agent-insight: command not found`
+
+Run `npm link` in this repository and ensure npm's global binary directory is on the host agent's `PATH`.
+
+### A run was interrupted
+
+Keep its run ID and invoke `semantic next` with the same host/model identity. The pending task is reconstructed when safe.
+
+### A transcript changed mid-run
+
+Fail the frozen task with reason `source_changed`, then continue the run. The final report will disclose the incomplete state.
+
+### Pi does not show `/agent-insights`
+
+Run `/reload` or restart Pi after installing the extension.
+
+### Coverage is partial
+
+Open the report's Read coverage section. It names unavailable sources, safety limits, parse failures, changed transcripts, exclusions, analyzer failures, and extension failures.
 
 ## Development
 
@@ -278,21 +329,20 @@ certification.
 npm test
 npm run check
 node bin/agent-insight.mjs doctor --json
-node bin/agent-insight.mjs report --source codex,claude --max-sessions 5 --output /tmp/agent-insight-smoke
+node bin/agent-insight.mjs report \
+  --source codex,claude \
+  --max-sessions 5 \
+  --output /tmp/agent-insight-smoke
 ```
 
-The suite includes transcript parsing, source-adapter boundaries, interaction
-selection, semantic protocol validation, resumable run checkpoints,
-evidence-bearing report rendering, and host integration behavior.
+The suite covers parsing, source boundaries, authorship filtering, Claude branch selection, deterministic metrics, baseline and audit protocols, evidence validation, resumable checkpoints, parity exclusions, and installation safety.
 
 ## References
 
 - [Claude Code 2.1.206 parity contract](docs/parity/claude-2.1.206.md)
-- [Claude Code commands](https://code.claude.com/docs/en/commands) and
-  [session storage](https://code.claude.com/docs/en/sessions)
-- [OpenCode commands](https://opencode.ai/docs/commands) and
-  [CLI reference](https://opencode.ai/docs/cli)
+- [Parity acceptance and live-smoke status](docs/parity/acceptance.md)
+- [Claude Code commands](https://code.claude.com/docs/en/commands) and [session storage](https://code.claude.com/docs/en/sessions)
+- [OpenCode commands](https://opencode.ai/docs/commands) and [CLI reference](https://opencode.ai/docs/cli)
 - [Cursor custom commands](https://docs.cursor.com/en/agent/chat/commands)
-- [Pi sessions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md#sessions)
-  and [extensions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)
+- [Pi sessions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md#sessions) and [extensions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)
 - [Groq coding integrations](https://console.groq.com/docs/coding-with-groq)
