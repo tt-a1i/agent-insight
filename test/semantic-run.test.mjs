@@ -353,3 +353,112 @@ test('one unreadable semantic candidate is recorded without aborting run creatio
   const final = await finalizeSemanticRun({ runsRoot, runId: prepared.id, outputDirectory: join(home, 'report') });
   assert.equal(final.report.parity.dataStatus, 'partial');
 });
+
+test('oversized session audits are exposed and ingested as bounded chunks', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agent-insight-audit-chunks-'));
+  const transcript = join(home, 'long-audit.jsonl');
+  const records = [];
+  for (let index = 0; index < 100; index += 1) {
+    records.push(JSON.stringify({
+      type: 'user',
+      timestamp: new Date(Date.UTC(2026, 6, 1, 9, index)).toISOString(),
+      sessionId: 'long-audit',
+      message: { role: 'user', content: `Audit request ${index} ${'u'.repeat(500)}` }
+    }));
+    records.push(JSON.stringify({
+      type: 'assistant',
+      timestamp: new Date(Date.UTC(2026, 6, 1, 9, index, 30)).toISOString(),
+      sessionId: 'long-audit',
+      message: { role: 'assistant', content: `Ack ${index}` }
+    }));
+  }
+  await writeFile(transcript, `${records.join('\n')}\n`);
+  const { runsRoot, prepared } = await prepareFixture(home, {
+    candidates: [{ source: 'claude', locator: { kind: 'file', path: transcript } }]
+  });
+  const manifestPath = join(runsRoot, prepared.id, 'manifest.json');
+  const run = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const session = run.sessions[0];
+  session.status = 'complete';
+  session.facet = {
+    underlyingGoal: 'Handle many requests',
+    goalCategories: { implement_feature: 1 },
+    outcome: 'partially_achieved',
+    briefSummary: 'Many requests were handled.'
+  };
+  const evidence = { evidenceSessionIds: [session.id] };
+  run.sections = {
+    project_areas: { areas: [] },
+    interaction_style: { narrative: 'n', keyPattern: 'k', ...evidence },
+    what_works: { intro: 'i', impressiveWorkflows: [] },
+    friction_analysis: { intro: 'i', categories: [] },
+    suggestions: { instructionAdditions: [], featuresToTry: [], usagePatterns: [] },
+    on_the_horizon: { intro: 'i', opportunities: [] },
+    fun_ending: { headline: 'h', detail: 'd', ...evidence },
+    at_a_glance: { whatsWorking: 'w', whatsHindering: 'h', quickWins: 'q', ambitiousWorkflows: 'a', ...evidence }
+  };
+  await writeFile(manifestPath, `${JSON.stringify(run, null, 2)}\n`);
+
+  const task = await nextSemanticTask({ runsRoot, runId: prepared.id });
+  assert.equal(task.kind, 'session_audit_chunk');
+  assert.ok(task.request.prompt.length <= 30_000);
+  assert.match(task.id, /^audit:session-chunk:/);
+
+  let current = task;
+  while (current.kind === 'session_audit_chunk') {
+    const messageIndex = current.input.messages[0].index;
+    const quotation = current.input.messages[0].text.slice(0, 40);
+    await ingestSemanticResult({
+      runsRoot,
+      runId: prepared.id,
+      taskId: current.id,
+      result: {
+        summary: 'Cumulative audit of broad user asks.',
+        findings: [{
+          category: 'vague_broad_commands',
+          severity: 'high',
+          evidence_posture: 'established_pattern',
+          accusation: 'Broad asks keep stacking.',
+          explanation: 'The chunk preserves a repeated permission-without-criteria habit.',
+          quotations: [quotation],
+          locators: [{ message_indexes: [messageIndex] }],
+          occurrence_count: 1,
+          better_alternative: 'Name files, acceptance, and non-goals.',
+          root_cause: 'vague authorization without criteria'
+        }]
+      }
+    });
+    current = await nextSemanticTask({ runsRoot, runId: prepared.id });
+  }
+  assert.equal(current.kind, 'session_audit');
+  assert.ok(current.request.prompt.length <= 30_000);
+  assert.match(current.request.prompt, /chunk-audits/);
+  const beforeFinal = await getSemanticRun({ runsRoot, runId: prepared.id });
+  const supported = beforeFinal.extensions.userAudit.sessionChunks[session.id].chunkResults.at(-1).findings[0];
+  await ingestSemanticResult({
+    runsRoot,
+    runId: prepared.id,
+    taskId: current.id,
+    result: {
+      findings: [{
+        category: 'vague_broad_commands',
+        severity: 'high',
+        evidence_posture: 'established_pattern',
+        accusation: 'Broad asks keep stacking.',
+        explanation: 'The synthesis keeps the permission-without-criteria habit.',
+        quotations: supported.quotations,
+        locators: [{ message_indexes: supported.locators[0].messageIndexes }],
+        occurrence_count: 1,
+        better_alternative: 'Name files, acceptance, and non-goals.',
+        root_cause: 'vague authorization without criteria'
+      }]
+    }
+  });
+  const afterSession = await getSemanticRun({ runsRoot, runId: prepared.id });
+  assert.equal(afterSession.extensions.userAudit.sessions[session.id].findings.length, 1);
+  assert.equal(afterSession.extensions.userAudit.sessionChunks[session.id], undefined);
+
+  const aggregateTask = await nextSemanticTask({ runsRoot, runId: prepared.id });
+  assert.ok(['audit_aggregate', 'audit_aggregate_chunk'].includes(aggregateTask.kind));
+  assert.ok(aggregateTask.request.prompt.length <= 30_000);
+});

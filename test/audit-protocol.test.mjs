@@ -2,8 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  createAuditAggregateChunkRequest,
   createAuditAggregateRequest,
+  createSessionAuditChunkRequest,
+  createSessionAuditFromChunksRequest,
   createSessionAuditRequest,
+  splitAuditSessions,
+  splitAuditUserMessages,
   validateAuditAggregateResult,
   validateSessionAuditResult
 } from '../src/audit-protocol.mjs';
@@ -93,12 +98,36 @@ test('session audit accepts grounded findings across the fixed taxonomy and free
   const request = createSessionAuditRequest(input);
   assert.equal(request.task, 'session_audit');
   assert.match(request.prompt, /goal_clarity/);
+  assert.match(request.prompt, /correction_quality/);
+  assert.match(request.prompt, /convergence/);
   assert.match(request.prompt, /freeform/);
   assert.match(request.prompt, /Just fix everything/);
 
   const result = validateSessionAuditResult({
     findings: [
       validFinding(),
+      validFinding({
+        category: 'correction_quality',
+        severity: 'medium',
+        evidence_posture: 'bold_inference',
+        accusation: 'Corrections arrive late and soft.',
+        explanation: 'The follow-up names the missing gate only after the first patch lands.',
+        quotations: [regressionText],
+        locators: [{ message_indexes: [3] }],
+        occurrence_count: null,
+        root_cause: 'late correction quality'
+      }),
+      validFinding({
+        category: 'convergence',
+        severity: 'low',
+        evidence_posture: 'bold_inference',
+        accusation: 'You keep the plan slightly movable.',
+        explanation: 'A second broad ask keeps the finish line from settling.',
+        quotations: [regressionText],
+        locators: [{ message_indexes: [3] }],
+        occurrence_count: null,
+        root_cause: 'incomplete convergence'
+      }),
       validFinding({
         category: 'freeform',
         severity: 'medium',
@@ -113,9 +142,11 @@ test('session audit accepts grounded findings across the fixed taxonomy and free
     ]
   }, input);
 
-  assert.equal(result.findings.length, 2);
+  assert.equal(result.findings.length, 4);
   assert.equal(result.findings[0].evidencePosture, 'established_pattern');
-  assert.equal(result.findings[1].category, 'freeform');
+  assert.equal(result.findings[1].category, 'correction_quality');
+  assert.equal(result.findings[2].category, 'convergence');
+  assert.equal(result.findings[3].category, 'freeform');
   assert.deepEqual(result.userTexts, [userText, regressionText, workflowText, '继续', '可以', 'ok']);
 });
 
@@ -201,7 +232,7 @@ test('audit aggregate rejects unknown session locators', () => {
       self_defeating_patterns: [],
       automation_candidates: []
     })
-  }, { sessions: [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaa', sessionId: 'session-a', findings: [] }] }), /unknown session/);
+  }, { sessions: [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaa', sessionId: 'session-a', userTexts: [userText], findings: [] }] }), /unknown session/);
 });
 
 test('audit aggregate keeps strengths, dedupes self-defeating patterns by intent, and requires one highest-leverage change', () => {
@@ -292,4 +323,84 @@ test('audit aggregate rejects longitudinal highest-leverage changes and drops fi
   assert.equal(result.automationCandidates.length, 1);
   assert.equal(result.automationCandidates[0].name, 'ship-checklist');
   assert.equal(result.automationCandidates[0].type, 'prompt_template');
+});
+
+test('fabricated quotations fail closed when the user corpus is empty', () => {
+  assert.throws(() => validateAuditAggregateResult({
+    top_three: [aggregateFinding({
+      quotations: ['fabricated'],
+      locators: [{ session_id: 'session-a', message_indexes: [1] }]
+    })],
+    remaining: [],
+    ...extensionFields({
+      strengths: [],
+      self_defeating_patterns: [],
+      automation_candidates: []
+    })
+  }, {
+    sessions: [{
+      id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+      sessionId: 'session-a',
+      userTexts: [],
+      findings: []
+    }]
+  }), /fabricated quotation/);
+});
+
+test('oversized session and aggregate audit prompts split into bounded chunks', () => {
+  const longMessages = [];
+  for (let index = 0; index < 100; index += 1) {
+    longMessages.push({
+      index: index + 1,
+      role: 'user',
+      text: `User request ${index} ${'x'.repeat(500)}`
+    });
+  }
+  const longInput = {
+    ...input,
+    messages: longMessages
+  };
+  const direct = createSessionAuditRequest(longInput);
+  assert.ok(direct.prompt.length > 30_000);
+
+  const messageChunks = splitAuditUserMessages(longMessages);
+  assert.ok(messageChunks.length > 1);
+  for (const [index, chunk] of messageChunks.entries()) {
+    const request = createSessionAuditChunkRequest(longInput, chunk, index, messageChunks.length, null);
+    assert.ok(request.prompt.length <= 30_000, `session audit chunk ${index} exceeded bound`);
+  }
+  const fromChunks = createSessionAuditFromChunksRequest(longInput, [{
+    summary: 'Cumulative sharp audit of early user habits.',
+    findings: []
+  }]);
+  assert.ok(fromChunks.prompt.length <= 30_000);
+
+  const sessions = Array.from({ length: 100 }, (_, index) => ({
+    id: index.toString(16).padStart(24, 'a'),
+    sessionId: `session-${index}`,
+    source: 'claude',
+    date: '2026-07-01',
+    projectPath: `/work/project-${index}`,
+    projectLabel: `project-${index}`,
+    facet: { underlyingGoal: `Goal ${index}`, briefSummary: `Summary ${index} ${'y'.repeat(200)}` },
+    userTexts: [`Request ${index} ${'z'.repeat(400)}`],
+    findings: [validFinding({
+      quotations: [`Request ${index} ${'z'.repeat(400)}`],
+      locators: [{ message_indexes: [1] }]
+    })]
+  }));
+  const aggregateDirect = createAuditAggregateRequest({ sessions });
+  assert.ok(aggregateDirect.prompt.length > 30_000);
+  const sessionGroups = splitAuditSessions(sessions);
+  assert.ok(sessionGroups.length > 1);
+  for (const [index, group] of sessionGroups.entries()) {
+    const request = createAuditAggregateChunkRequest({ sessions }, group, index, sessionGroups.length, null);
+    assert.ok(request.prompt.length <= 30_000, `audit aggregate chunk ${index} exceeded bound`);
+  }
+  const aggregateFromChunks = createAuditAggregateRequest({
+    sessions,
+    chunkSummaries: [{ summary: 'Cross-session synthesis of sharp habits.', findings: [] }]
+  });
+  assert.ok(aggregateFromChunks.prompt.length <= 30_000);
+  assert.match(aggregateFromChunks.prompt, /chunk_summaries/);
 });

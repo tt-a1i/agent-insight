@@ -1,0 +1,64 @@
+ROOT=/tmp/agent-insight-smoke-s5dS
+HOME=/tmp/agent-insight-smoke-s5dS/home
+=== five-host project installs ===
+Installed fused claude Insights bridge (prepare → next → ingest|fail → finalize): /private/tmp/agent-insight-smoke-s5dS/project/.claude/commands/agent-insights.md
+Installed fused codex Insights bridge (prepare → next → ingest|fail → finalize): /private/tmp/agent-insight-smoke-s5dS/project/.agents/skills/agent-insights/SKILL.md
+Installed fused cursor Insights bridge (prepare → next → ingest|fail → finalize): /private/tmp/agent-insight-smoke-s5dS/project/.cursor/commands/agent-insights.md
+Installed fused opencode Insights bridge (prepare → next → ingest|fail → finalize): /private/tmp/agent-insight-smoke-s5dS/project/.opencode/commands/agent-insights.md
+Installed fused pi Insights bridge (prepare → next → ingest|fail → finalize): /private/tmp/agent-insight-smoke-s5dS/project/.pi/extensions/agent-insights.ts
+=== seed fixture under isolated HOME ===
+=== prepare ===
+{
+  "runId": "36c74e72-477a-4a3a-b17a-32a088acf2a7",
+  "manifestPath": "/tmp/agent-insight-smoke-s5dS/home/.agent-insight/runs/36c74e72-477a-4a3a-b17a-32a088acf2a7/manifest.json"
+}
+RUN=36c74e72-477a-4a3a-b17a-32a088acf2a7
+=== next #1 (expose frozen task A) ===
+{
+  "id": "session:471d24e3901bacbbe6aea609",
+  "kind": "session_facet",
+  "runId": "36c74e72-477a-4a3a-b17a-32a088acf2a7",
+  "activeSame": true
+}
+=== next #2 (no ingest/fail; must resume same frozen task A) ===
+{
+  "resumed": true,
+  "id": "session:471d24e3901bacbbe6aea609",
+  "kind": "session_facet",
+  "sameAsFirst": true
+}
+=== fail frozen task A after resume ===
+{
+  "taskId": "session:471d24e3901bacbbe6aea609",
+  "reason": "analyzer_failure",
+  "status": "failed"
+}
+=== next after fail (continue/degrade) ===
+{
+  "kind": "complete",
+  "runId": "36c74e72-477a-4a3a-b17a-32a088acf2a7"
+}
+=== finalize ===
+Your shareable insights report is ready:
+file:///tmp/agent-insight-smoke-s5dS/home/.agent-insight/usage-data/report-2026-07-12-052341.html
+
+Want to dig into any section or try one of the suggestions?
+=== report status ===
+{
+  "parity": {
+    "dataStatus": "partial",
+    "structuralStatus": "partial"
+  },
+  "extensions": {
+    "userAudit": {
+      "status": "incomplete",
+      "failureReason": "no_semantic_evidence"
+    }
+  }
+}
+=== installed paths ===
+$ROOT/project/.agents/skills/agent-insights/SKILL.md
+$ROOT/project/.claude/commands/agent-insights.md
+$ROOT/project/.cursor/commands/agent-insights.md
+$ROOT/project/.opencode/commands/agent-insights.md
+$ROOT/project/.pi/extensions/agent-insights.ts

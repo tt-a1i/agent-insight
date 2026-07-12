@@ -9,7 +9,7 @@ smoke evidence. It deliberately separates:
 | Gate / fixture tests (`npm test`) | Extension schema and HTML headings are excluded from baseline scoring; partial source/extension failure still yields a usable baseline with honest coverage | Live parity against Claude Code |
 | Self-comparison of two Agent Insight reports | Harness wiring and HTML contract checks | Real Claude parity (forbidden as certification) |
 | Trusted independent reference compare | Structural + deterministic gates against Claude 2.1.206 | Semantic quality (still needs blind review) |
-| Live host smoke | Install / invoke / interrupt / finalize on real hosts | Score `1` without a trusted reference |
+| Live host smoke | Install / invoke / frozen-task resume / finalize on real hosts | Score `1` without a trusted reference |
 
 ## Baseline scoring exclusions (always in code)
 
@@ -125,38 +125,52 @@ npm link   # or: node /path/to/insight/bin/agent-insight.mjs install --host <hos
 # For each host: Claude Code, Codex, Cursor, OpenCode, Pi
 # 1) install slash command / skill into $ROOT only
 # 2) invoke /agent-insights (or host equivalent)
-# 3) interrupt mid-run; resume with semantic next
-# 4) finalize and confirm timestamped HTML + report.json under the isolated data root
+# 3) leave the exposed task without ingest/fail; call semantic next again and confirm the same frozen task resumes
+# 4) ingest or fail, continue the loop, finalize, and confirm timestamped HTML + report.json under the isolated data root
 ```
 
 Evidence to retain per host (when available):
 
 - install path under `$ROOT` (not `~/.claude`, `~/.codex`, etc. of the real user)
 - invocation transcript or command log
-- interruption + resume run id
+- frozen-task resume proof: two consecutive `semantic next` calls return the same task id before ingest/fail
 - final `report.html` / `report.json` paths and `parity.dataStatus` / `extensions.userAudit.status`
 
-### Current blocker (recorded 2026-07-12)
+### Current status (recorded 2026-07-12, updated after audit remediations)
 
-Hosts present on this machine (`claude`, `codex`, `opencode`, `pi`, `cursor`) were **not** exercised for Issue #8 smoke because:
+**Reference-gated certification (still blocked):**
 
-1. No trusted Claude 2.1.206 reference corpus is available to pair with live reports for certification.
-2. Live `/insights` or fused `/agent-insights` runs would write semantic model output and must not be claimed as parity evidence without the reference gate above.
-3. Smoke must use isolated `HOME`/project roots; a full five-host matrix was deferred rather than risk mutating the operator’s real integration files.
+1. No trusted Claude Code **2.1.206** reference corpus is available on this machine (local Claude is newer / unpinned for certification).
+2. Without that independent reference, live structural/deterministic score `1` and blind semantic review must not be claimed.
 
-When unblocked, append dated command logs and artifact paths under `docs/parity/artifacts/` and link them from this section without rewriting history of earlier blockers.
+**Live-host smoke (independent of reference):**
+
+Live install / invoke / frozen-task resume / finalize smoke does **not** require a 2.1.206 reference. Isolated temp `HOME` / project roots are enough to avoid mutating the operator’s real host configs. Smoke proves host wiring only; it must not be summarized as Claude parity.
+
+**Completed on 2026-07-12 (isolated CLI smoke, not host-UI slash invoke):**
+
+Evidence: [`docs/parity/artifacts/2026-07-12-isolated-smoke/`](../artifacts/2026-07-12-isolated-smoke/).
+
+- Installed fused bridges for all five hosts into an isolated project root (`claude`, `codex`, `cursor`, `opencode`, `pi`).
+- Under the same isolated `HOME`, proved **frozen-task resume**: `semantic next` exposed task A, a second `semantic next` with no ingest/fail returned the same task A, then `semantic fail` → `semantic next` continue → `semantic finalize`.
+- Final report landed only under `$HOME/.agent-insight/usage-data/` inside the temp tree.
+
+**Still outstanding for full live acceptance:**
+
+- Invoking `/agent-insights` (or host equivalent) from inside each live host UI / REPL, not only the CLI under isolated `HOME`.
+- Reference-gated structural/deterministic score `1` and blind semantic review (blocked on missing Claude 2.1.206 reference).
 
 ## Honest summary for Issue #8
 
-**Certified in-repo (gate tests):**
+**Certified in-repo (code / gate tests):**
 
 - Extension fields and trailing audit HTML headings are excluded from Claude baseline structural / deterministic / blind-semantic scoring.
 - Extension headings must not break required Claude HTML order.
 - Partial source coverage and incomplete audit extensions still produce a usable baseline report with honest coverage notes.
 
-**Not certified (blocked):**
+**Not certified (live acceptance unfinished):**
 
 - Independently captured Claude Code 2.1.206 reference with out-of-band SHA-256.
 - Live structural/deterministic score 1 against that reference.
 - Blind semantic tie-or-better against that reference.
-- Live five-host install/invoke/interrupt/finalize smoke matrix.
+- Live five-host **in-host UI** slash-command invoke matrix (isolated five-host **install** + isolated CLI **frozen-task resume**/fail/finalize evidence is captured under `docs/parity/artifacts/2026-07-12-isolated-smoke/`).

@@ -5,7 +5,20 @@ import { join } from 'node:path';
 
 import { ANALYSIS_PROTOCOL_VERSION, createSessionChunkRequest, createSessionFacetFromChunksRequest, createSessionFacetRequest, splitSessionMessages, validateSessionChunkResult, validateSessionFacet } from './protocol.mjs';
 import { AGGREGATE_TASKS, createAggregateChunkRequest, createAggregateRequest, createAtAGlanceChunkRequest, splitAggregateSections, splitAggregateSessions, validateAggregateChunkResult, validateAggregateResult } from './aggregate-protocol.mjs';
-import { AUDIT_PROTOCOL_VERSION, createAuditAggregateRequest, createSessionAuditRequest, validateAuditAggregateResult, validateSessionAuditResult } from './audit-protocol.mjs';
+import {
+  AUDIT_PROTOCOL_VERSION,
+  createAuditAggregateChunkRequest,
+  createAuditAggregateRequest,
+  createSessionAuditChunkRequest,
+  createSessionAuditFromChunksRequest,
+  createSessionAuditRequest,
+  splitAuditSessions,
+  splitAuditUserMessages,
+  validateAuditAggregateChunkResult,
+  validateAuditAggregateResult,
+  validateSessionAuditChunkResult,
+  validateSessionAuditResult
+} from './audit-protocol.mjs';
 import { extractAnalysisInput } from './transcript.mjs';
 import { parseSessionFile } from './parse.mjs';
 import { summarizeSessions } from './analyze.mjs';
@@ -156,8 +169,31 @@ function auditAggregatePending(run) {
 
 function ensureUserAuditExtension(run) {
   run.extensions ??= {};
-  run.extensions.userAudit ??= { sessions: {}, aggregate: undefined, protocolVersion: AUDIT_PROTOCOL_VERSION };
+  run.extensions.userAudit ??= {
+    sessions: {},
+    aggregate: undefined,
+    protocolVersion: AUDIT_PROTOCOL_VERSION,
+    sessionChunks: {},
+    aggregateChunks: []
+  };
+  run.extensions.userAudit.sessionChunks ??= {};
+  run.extensions.userAudit.aggregateChunks ??= [];
   return run.extensions.userAudit;
+}
+
+function auditSessionChunkState(run, sessionId) {
+  return ensureUserAuditExtension(run).sessionChunks[sessionId] ?? null;
+}
+
+function initAuditSessionChunks(run, sessionId, messages) {
+  const extension = ensureUserAuditExtension(run);
+  const chunks = splitAuditUserMessages(messages);
+  extension.sessionChunks[sessionId] = {
+    chunkMessageIndexes: chunks.map((chunk) => chunk.map((message) => message.index)),
+    chunkCount: chunks.length,
+    chunkResults: []
+  };
+  return extension.sessionChunks[sessionId];
 }
 
 function auditAggregateContext(run) {
@@ -305,6 +341,26 @@ async function resumeActiveTask(runsRoot, run) {
       : direct;
     return { id, kind: 'aggregate', section, runId: run.id, request, submissionPath };
   }
+  const auditSessionChunk = /^audit:session-chunk:([a-f0-9]{24}):(\d+)$/.exec(id);
+  if (auditSessionChunk) {
+    const session = run.sessions.find((candidate) => candidate.id === auditSessionChunk[1]);
+    if (!session || session.status !== 'complete') throw new Error('The frozen audit session chunk task is no longer available.');
+    const input = await loadAnalysisInput(session.locator, session.source);
+    if (input.contentHash !== session.contentHash || input.opaqueId !== session.id) {
+      return { kind: 'source_changed', id, runId: run.id, submissionPath, message: 'The source changed after this task was exposed. Mark it failed with reason source_changed, then continue.' };
+    }
+    const chunks = splitAuditUserMessages(input.messages);
+    const index = Number(auditSessionChunk[2]);
+    const state = auditSessionChunkState(run, session.id);
+    return {
+      id,
+      kind: 'session_audit_chunk',
+      runId: run.id,
+      input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages: chunks[index] },
+      request: createSessionAuditChunkRequest(input, chunks[index], index, chunks.length, state?.chunkResults?.at(-1) ?? null),
+      submissionPath
+    };
+  }
   const auditSession = /^audit:session:([a-f0-9]{24})$/.exec(id)?.[1];
   if (auditSession) {
     const session = run.sessions.find((candidate) => candidate.id === auditSession);
@@ -312,6 +368,16 @@ async function resumeActiveTask(runsRoot, run) {
     const input = await loadAnalysisInput(session.locator, session.source);
     if (input.contentHash !== session.contentHash || input.opaqueId !== session.id) {
       return { kind: 'source_changed', id, runId: run.id, submissionPath, message: 'The source changed after this task was exposed. Mark it failed with reason source_changed, then continue.' };
+    }
+    const state = auditSessionChunkState(run, session.id);
+    if (state?.chunkCount) {
+      return {
+        id,
+        kind: 'session_audit',
+        runId: run.id,
+        request: createSessionAuditFromChunksRequest(session, state.chunkResults.length ? [state.chunkResults.at(-1)] : []),
+        submissionPath
+      };
     }
     return {
       id,
@@ -322,12 +388,33 @@ async function resumeActiveTask(runsRoot, run) {
       submissionPath
     };
   }
+  const auditAggregateChunk = /^audit:aggregate-chunk:(\d+)$/.exec(id);
+  if (auditAggregateChunk) {
+    const context = auditAggregateContext(run);
+    const groups = splitAuditSessions(context.sessions);
+    const index = Number(auditAggregateChunk[1]);
+    const extension = ensureUserAuditExtension(run);
+    const carry = extension.aggregateChunks.at(-1) ?? null;
+    return {
+      id,
+      kind: 'audit_aggregate_chunk',
+      runId: run.id,
+      request: createAuditAggregateChunkRequest(context, groups[index], index, groups.length, carry),
+      submissionPath
+    };
+  }
   if (id === 'audit:aggregate') {
+    const context = auditAggregateContext(run);
+    const direct = createAuditAggregateRequest(context);
+    const extension = ensureUserAuditExtension(run);
+    const request = direct.prompt.length > 30_000
+      ? createAuditAggregateRequest({ ...context, chunkSummaries: [extension.aggregateChunks.at(-1)] })
+      : direct;
     return {
       id,
       kind: 'audit_aggregate',
       runId: run.id,
-      request: createAuditAggregateRequest(auditAggregateContext(run)),
+      request,
       submissionPath
     };
   }
@@ -379,13 +466,43 @@ export async function semanticSubmissionForTask({ runsRoot, runId, taskId }) {
       const groups = aggregateGroups(section, context);
       if ((run.aggregateChunks?.[section]?.length ?? 0) < groups.length) throw new Error('Aggregate evidence chunks must complete before the final section task.');
     }
+  } else if (id.startsWith('audit:session-chunk:')) {
+    if (nextAggregateSection(run)) throw new Error('Baseline aggregate tasks must complete before audit tasks.');
+    if (run.extensionFailures?.userAudit) throw new Error('User audit extension already failed.');
+    const match = /^audit:session-chunk:([a-f0-9]{24}):(\d+)$/.exec(id);
+    const session = nextAuditSession(run);
+    const state = match ? auditSessionChunkState(run, match[1]) : null;
+    const expectedIndex = state?.chunkResults?.length ?? 0;
+    if (!session || !state || session.id !== match[1] || `audit:session-chunk:${session.id}:${expectedIndex}` !== id || expectedIndex >= state.chunkCount) {
+      throw new Error('The submitted audit session chunk is not the next pending audit task.');
+    }
   } else if (id.startsWith('audit:session:')) {
     if (nextAggregateSection(run)) throw new Error('Baseline aggregate tasks must complete before audit tasks.');
     if (run.extensionFailures?.userAudit) throw new Error('User audit extension already failed.');
     const session = nextAuditSession(run);
     if (!session || `audit:session:${session.id}` !== id) throw new Error('The submitted audit session is not the next pending audit task.');
+    const state = auditSessionChunkState(run, session.id);
+    if (state?.chunkCount && state.chunkResults.length !== state.chunkCount) {
+      throw new Error('All audit session chunks must complete before the final session audit.');
+    }
+  } else if (id.startsWith('audit:aggregate-chunk:')) {
+    if (!auditAggregatePending(run)) throw new Error('The submitted audit aggregate chunk is not the next pending audit task.');
+    const context = auditAggregateContext(run);
+    const groups = splitAuditSessions(context.sessions);
+    const expectedIndex = ensureUserAuditExtension(run).aggregateChunks.length;
+    if (`audit:aggregate-chunk:${expectedIndex}` !== id || expectedIndex >= groups.length) {
+      throw new Error('The submitted audit aggregate chunk is not the next pending audit task.');
+    }
   } else if (id === 'audit:aggregate') {
     if (!auditAggregatePending(run)) throw new Error('The submitted audit aggregate is not the next pending audit task.');
+    const context = auditAggregateContext(run);
+    const direct = createAuditAggregateRequest(context);
+    if (direct.prompt.length > 30_000) {
+      const groups = splitAuditSessions(context.sessions);
+      if (ensureUserAuditExtension(run).aggregateChunks.length < groups.length) {
+        throw new Error('Audit aggregate chunks must complete before the final aggregate task.');
+      }
+    }
   } else {
     throw new Error('Unsupported semantic task id.');
   }
@@ -459,7 +576,7 @@ export async function prepareSemanticRun({ runsRoot, request, candidates, analyz
     sections: {},
     sectionFailures: {},
     aggregateChunks: {},
-    extensions: { userAudit: { sessions: {}, aggregate: undefined, protocolVersion: AUDIT_PROTOCOL_VERSION } },
+    extensions: { userAudit: { sessions: {}, aggregate: undefined, protocolVersion: AUDIT_PROTOCOL_VERSION, sessionChunks: {}, aggregateChunks: [] } },
     extensionFailures: {},
     preparationFailures,
     failures: preparationFailures.map((failure) => ({ taskId: null, reason: failure.reason, source: failure.source, at: new Date().toISOString() })),
@@ -501,21 +618,80 @@ export async function nextSemanticTask({ runsRoot, runId }) {
             await writeManifest(runsRoot, run);
             continue;
           }
+          let request = createSessionAuditRequest(input);
+          let state = auditSessionChunkState(run, auditSession.id);
+          if (request.prompt.length > 30_000 || state?.chunkCount) {
+            if (!state?.chunkCount) state = initAuditSessionChunks(run, auditSession.id, input.messages);
+            const chunks = splitAuditUserMessages(input.messages);
+            const chunkIndex = state.chunkResults.length;
+            if (chunkIndex < state.chunkCount) {
+              const chunkRequest = createSessionAuditChunkRequest(
+                input,
+                chunks[chunkIndex],
+                chunkIndex,
+                chunks.length,
+                state.chunkResults.at(-1) ?? null
+              );
+              if (chunkRequest.prompt.length > 30_000) {
+                throw new Error(`Audit session safety limit exceeded for chunk ${chunkIndex + 1}.`);
+              }
+              return exposeTask(runsRoot, run, {
+                id: `audit:session-chunk:${auditSession.id}:${chunkIndex}`,
+                kind: 'session_audit_chunk',
+                runId,
+                input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages: chunks[chunkIndex] },
+                request: chunkRequest,
+                submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+              });
+            }
+            request = createSessionAuditFromChunksRequest(auditSession, state.chunkResults.length ? [state.chunkResults.at(-1)] : []);
+            if (request.prompt.length > 30_000) throw new Error('Audit session safety limit exceeded for final session synthesis.');
+            return exposeTask(runsRoot, run, {
+              id: `audit:session:${auditSession.id}`,
+              kind: 'session_audit',
+              runId,
+              request,
+              submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+            });
+          }
           return exposeTask(runsRoot, run, {
             id: `audit:session:${auditSession.id}`,
             kind: 'session_audit',
             runId,
             input,
-            request: createSessionAuditRequest(input),
+            request,
             submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
           });
         }
         if (auditAggregatePending(run)) {
+          const context = auditAggregateContext(run);
+          let request = createAuditAggregateRequest(context);
+          if (request.prompt.length > 30_000) {
+            const groups = splitAuditSessions(context.sessions);
+            const extension = ensureUserAuditExtension(run);
+            const chunkIndex = extension.aggregateChunks.length;
+            if (chunkIndex < groups.length) {
+              const carry = extension.aggregateChunks.at(-1) ?? null;
+              const chunkRequest = createAuditAggregateChunkRequest(context, groups[chunkIndex], chunkIndex, groups.length, carry);
+              if (chunkRequest.prompt.length > 30_000) {
+                throw new Error(`Audit aggregate safety limit exceeded for chunk ${chunkIndex + 1}.`);
+              }
+              return exposeTask(runsRoot, run, {
+                id: `audit:aggregate-chunk:${chunkIndex}`,
+                kind: 'audit_aggregate_chunk',
+                runId,
+                request: chunkRequest,
+                submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+              });
+            }
+            request = createAuditAggregateRequest({ ...context, chunkSummaries: [extension.aggregateChunks.at(-1)] });
+            if (request.prompt.length > 30_000) throw new Error('Audit aggregate safety limit exceeded for final synthesis.');
+          }
           return exposeTask(runsRoot, run, {
             id: 'audit:aggregate',
             kind: 'audit_aggregate',
             runId,
-            request: createAuditAggregateRequest(auditAggregateContext(run)),
+            request,
             submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
           });
         }
@@ -684,6 +860,45 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     await writeManifest(runsRoot, run);
     return value;
   }
+  if (String(taskId).startsWith('audit:session-chunk:')) {
+    const match = /^audit:session-chunk:([a-f0-9]{24}):(\d+)$/.exec(String(taskId));
+    const session = match && run.sessions.find((candidate) => candidate.id === match[1]);
+    const index = match ? Number(match[2]) : -1;
+    const state = session ? auditSessionChunkState(run, session.id) : null;
+    if (!session || session.status !== 'complete' || nextAggregateSection(run) || run.extensionFailures?.userAudit) {
+      throw new Error('Audit session chunk task is missing, out of order, or already complete.');
+    }
+    const expected = nextAuditSession(run);
+    if (!expected || expected.id !== session.id || !state || index !== state.chunkResults.length || index >= state.chunkCount) {
+      throw new Error('Audit session chunk task is out of order.');
+    }
+    const input = await loadAnalysisInput(session.locator, session.source);
+    if (input.contentHash !== session.contentHash || input.opaqueId !== session.id) {
+      throw new Error('Audit session source changed after prepare.');
+    }
+    const indexes = state.chunkMessageIndexes[index];
+    const priorIndexes = (state.chunkResults.at(-1)?.findings ?? []).flatMap((finding) =>
+      (finding.locators ?? []).flatMap((locator) => locator.messageIndexes ?? [])
+    );
+    const allowedIndexes = [...new Set([...indexes, ...priorIndexes])];
+    const textByIndex = new Map(
+      input.messages
+        .filter((message) => message?.role === 'user' && typeof message.text === 'string')
+        .map((message) => [message.index, message.text])
+    );
+    const chunk = validateSessionAuditChunkResult(result, {
+      source: input.source,
+      opaqueId: input.opaqueId,
+      sessionId: input.sessionId,
+      date: input.date,
+      userTexts: allowedIndexes.map((messageIndex) => textByIndex.get(messageIndex)).filter(Boolean),
+      messages: allowedIndexes.map((messageIndex) => ({ index: messageIndex }))
+    });
+    state.chunkResults.push(chunk);
+    run.activeTask = null;
+    await writeManifest(runsRoot, run);
+    return chunk;
+  }
   if (String(taskId).startsWith('audit:session:')) {
     const sessionId = String(taskId).slice('audit:session:'.length);
     const session = run.sessions.find((candidate) => candidate.id === sessionId);
@@ -696,18 +911,70 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     if (input.contentHash !== session.contentHash || input.opaqueId !== session.id) {
       throw new Error('Audit session source changed after prepare.');
     }
-    const audit = validateSessionAuditResult(result, input);
+    const state = auditSessionChunkState(run, session.id);
+    if (state?.chunkCount && state.chunkResults.length !== state.chunkCount) {
+      throw new Error('All audit session chunks must complete before the final session audit.');
+    }
+    let auditInput = input;
+    if (state?.chunkCount) {
+      const allowedIndexes = [...new Set(
+        (state.chunkResults.at(-1)?.findings ?? []).flatMap((finding) =>
+          (finding.locators ?? []).flatMap((locator) => locator.messageIndexes ?? [])
+        )
+      )];
+      auditInput = {
+        ...input,
+        userTexts: input.messages.filter((message) => message?.role === 'user').map((message) => message.text),
+        messages: allowedIndexes.length
+          ? allowedIndexes.map((index) => ({ index }))
+          : input.messages.filter((message) => message?.role === 'user').map((message) => ({ index: message.index }))
+      };
+    }
+    const audit = validateSessionAuditResult(result, auditInput);
     const extension = ensureUserAuditExtension(run);
     extension.sessions[session.id] = audit;
+    delete extension.sessionChunks[session.id];
     run.activeTask = null;
     await writeManifest(runsRoot, run);
     return audit;
   }
+  if (String(taskId).startsWith('audit:aggregate-chunk:')) {
+    if (!auditAggregatePending(run)) throw new Error('Audit aggregate chunk task is missing, out of order, or already complete.');
+    const index = Number(String(taskId).slice('audit:aggregate-chunk:'.length));
+    const context = auditAggregateContext(run);
+    const groups = splitAuditSessions(context.sessions);
+    const extension = ensureUserAuditExtension(run);
+    if (!Number.isInteger(index) || index !== extension.aggregateChunks.length || index >= groups.length) {
+      throw new Error('Audit aggregate chunk task is out of order.');
+    }
+    const priorSessions = extension.aggregateChunks.at(-1)?.findings
+      ?.flatMap((finding) => (finding.locators ?? []).map((locator) => locator.sessionId))
+      ?? [];
+    const currentIds = new Set([...priorSessions, ...groups[index].map((session) => session.id)]);
+    const chunkContext = {
+      sessions: context.sessions.filter((session) => currentIds.has(session.id) || currentIds.has(session.sessionId))
+    };
+    const chunk = validateAuditAggregateChunkResult(result, chunkContext);
+    extension.aggregateChunks.push(chunk);
+    run.activeTask = null;
+    await writeManifest(runsRoot, run);
+    return chunk;
+  }
   if (String(taskId) === 'audit:aggregate') {
     if (!auditAggregatePending(run)) throw new Error('Audit aggregate task is missing, out of order, or already complete.');
-    const aggregate = validateAuditAggregateResult(result, auditAggregateContext(run));
+    const context = auditAggregateContext(run);
+    const direct = createAuditAggregateRequest(context);
+    let validationContext = context;
+    if (direct.prompt.length > 30_000) {
+      const groups = splitAuditSessions(context.sessions);
+      const extension = ensureUserAuditExtension(run);
+      if (extension.aggregateChunks.length < groups.length) throw new Error('Audit aggregate chunks are incomplete.');
+      validationContext = context;
+    }
+    const aggregate = validateAuditAggregateResult(result, validationContext);
     const extension = ensureUserAuditExtension(run);
     extension.aggregate = aggregate;
+    extension.aggregateChunks = [];
     run.activeTask = null;
     await writeManifest(runsRoot, run);
     return aggregate;
