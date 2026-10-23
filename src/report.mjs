@@ -243,7 +243,7 @@ function renderPrimaryAction(report, t) {
   const index = buildEvidenceIndex(report);
   const copy = coach.copyablePrompt ? `<p><strong>${escapeHtml(t.audit.trySaying)}</strong></p>${copyBlock(coach.copyablePrompt)}` : '';
   const findings = coach.findings.map((finding) => `<article data-posture="${escapeHtml(finding.evidencePosture)}"><p class="muted">${escapeHtml(taxonomyLabel('evidencePosture', finding.evidencePosture, t.htmlLang))}</p><h4>${escapeHtml(finding.accusation)}</h4><p>${escapeHtml(finding.explanation)}</p>${renderItemEvidence(finding, sessions, t, index)}</article>`).join('');
-  return `<aside id="coach-primary-action" class="callout coach-action" data-extension-section="coach_primary_action"><h3>${escapeHtml(t.audit.primaryAction)}</h3><p class="muted">${escapeHtml(t.audit.primaryActionLead)}</p><p><strong>${escapeHtml(coach.title)}</strong></p>${coach.detail ? `<p>${escapeHtml(coach.detail)}</p>` : ''}${copy}${renderItemEvidence(coach, sessions, t, index)}${findings}<p class="muted">${escapeHtml(t.audit.sourceValidationNote)}</p></aside>`;
+  return `<aside id="coach-primary-action" class="callout coach-action" data-extension-section="coach_primary_action"><h3>${escapeHtml(t.audit.primaryAction)}</h3><p class="muted">${escapeHtml(t.audit.primaryActionLead)}</p><p class="coach-title"><strong>${escapeHtml(coach.title)}</strong></p>${coach.detail ? `<p>${escapeHtml(coach.detail)}</p>` : ''}${copy}${renderItemEvidence(coach, sessions, t, index)}${findings}<p class="muted">${escapeHtml(t.audit.sourceValidationNote)}</p></aside>`;
 }
 
 function renderUserAudit(report, t) {
@@ -458,7 +458,9 @@ function renderEvidenceGrounding(report) {
       const locator = { sessionId: entry.id, messageIndexes: item.messageIndexes ?? [] };
       return `<article id="${index.groundingAnchor(entry, position)}" class="panel">${description}${quotation}<p class="evidence">${escapeHtml(evidenceLocatorLabel(locator, index.entries.map((value) => value.session), t))}</p></article>`;
     }).join('') || `<p class="empty">${escapeHtml(labels.noGrounding)}</p>`;
-    return `<div id="${index.anchor(entry)}" class="evidence-session"><h3>${escapeHtml(title)}</h3>${items}</div>`;
+    const open = index.entries.length === 1 ? ' open' : '';
+    const count = `${entry.grounding.length} ${locale === 'zh' ? '条证据' : entry.grounding.length === 1 ? 'item' : 'items'}`;
+    return `<details id="${index.anchor(entry)}" class="evidence-session"${open}><summary><span class="evidence-session-title">${escapeHtml(title)}</span><span class="disclosure-meta">${escapeHtml(count)}</span></summary>${items}</details>`;
   }).join('');
 }
 
@@ -516,88 +518,320 @@ function sectionCards(items, renderer, t) {
 function reportSkinCss() {
   return `:root{
   color-scheme:light;
-  --toc-height:52px;
-  --bg:#FBFAF7;--ink:#1A1A1A;--accent:#0E6E6E;--hair:#E7E3DA;--mute:#6B6459;
-  --soft:#F4F1EA;--softer:#F8F6F1;--bull:#1F9D55;--bear:#D6453D;
-  --bar-1:#0E6E6E;--bar-2:#6B7FD7;--bar-3:#5B6B7A;--bar-4:#C4A35A;--bar-5:#8B6B9E;
+  --toc-height:60px;
+  --bg:#F4F2EB;--paper:#FFFEFA;--ink:#17231F;--night:#152E28;--night-2:#1D3C34;
+  --accent:#236A57;--lime:#C9F27C;--coral:#F28C6B;--hair:#D9D8CE;--mute:#626C65;
+  --soft:#E9EEE4;--softer:#F8F7F1;--bull:#267457;--bear:#B94F3F;
+  --bar-1:#236A57;--bar-2:#6C78A8;--bar-3:#64766E;--bar-4:#B88A43;--bar-5:#936B82;
+  --display:"Instrument Serif","Noto Serif SC",Georgia,"Songti SC",serif;
   --serif:"Source Serif 4","Noto Serif SC",Georgia,"Songti SC",serif;
   --sans:"Inter","Noto Sans SC",system-ui,-apple-system,"Segoe UI",sans-serif;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
-  --muted:var(--mute);--panel:var(--softer);--line:var(--hair)
+  --muted:var(--mute);--panel:var(--paper);--line:var(--hair)
 }
 *{box-sizing:border-box}
-html{scroll-behavior:smooth;scroll-padding-top:calc(var(--toc-height) + 16px)}
-body{margin:0 auto;max-width:960px;padding:0 22px 80px;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16.5px;line-height:1.75;-webkit-font-smoothing:antialiased}
-a{color:var(--accent);text-decoration:none}
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--toc-height) + 24px)}
+body{counter-reset:report-section;margin:0 auto;max-width:1180px;padding:0 32px 96px;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased}
+body>section{counter-increment:report-section;scroll-margin-top:calc(var(--toc-height) + 24px)}
+a{color:var(--accent);text-decoration:none;text-underline-offset:3px}
+a:hover{text-decoration:underline}
+a:focus-visible,button:focus-visible,select:focus-visible{outline:3px solid #B94F3F;outline-offset:4px}
 .num,.metric strong,td.n{font-family:var(--mono);font-variant-numeric:tabular-nums}
-header.mast{padding:42px 0 22px;border-bottom:1px solid var(--hair)}
-.eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:2.2px;text-transform:uppercase;color:var(--accent);font-weight:600;margin:0 0 12px}
-header.mast h1{font-family:var(--serif);font-weight:700;font-size:34px;line-height:1.25;margin:0 0 10px;letter-spacing:.2px}
-header.mast .subtitle{font-family:var(--serif);font-style:italic;font-size:17.5px;color:var(--mute);line-height:1.5;margin:0 0 14px}
-header.mast .meta-line{font-size:13px;color:var(--mute);margin:0 0 10px}
-h2{font-family:var(--serif);font-weight:600;font-size:22px;margin:36px 0 14px;line-height:1.3;letter-spacing:.1px}
-h3{font-family:var(--serif);font-weight:600;font-size:16px;margin:0 0 8px}
+.reading-progress{position:fixed;inset:0 0 auto;height:3px;z-index:200;pointer-events:none}
+.reading-progress i{display:block;width:100%;height:100%;background:var(--coral);transform:scaleX(0);transform-origin:left center}
+header.mast{position:relative;isolation:isolate;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);align-items:center;gap:32px;min-height:390px;margin:28px 0 0;padding:52px 54px;background:var(--night);color:#F3F7EE;clip-path:polygon(0 0,100% 0,100% calc(100% - 54px),calc(100% - 54px) 100%,0 100%);overflow:hidden}
+header.mast::before{content:"";position:absolute;z-index:-1;width:460px;height:460px;right:-170px;top:-230px;border:1px solid rgba(201,242,124,.18);border-radius:50%;box-shadow:0 0 0 56px rgba(201,242,124,.035),0 0 0 112px rgba(201,242,124,.025)}
+.mast-copy{position:relative;z-index:1}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:2.6px;text-transform:uppercase;color:var(--lime);font-weight:600;margin:0 0 24px}
+header.mast h1{font-family:var(--display);font-weight:400;font-size:76px;line-height:.94;margin:0 0 24px;letter-spacing:-2px;max-width:650px}
+header.mast .subtitle{font-family:var(--serif);font-style:normal;font-size:18px;color:#D6E0D5;line-height:1.55;margin:0 0 18px;max-width:590px}
+header.mast .meta-line{font-family:var(--mono);font-size:11px;color:#A9BBAE;margin:0 0 20px;overflow-wrap:anywhere}
+header.mast .muted{color:#A9BBAE}
+.signal-art{align-self:stretch;display:flex;flex-direction:column;justify-content:center;min-width:0;color:var(--lime)}
+.signal-art svg{display:block;width:100%;max-height:285px;overflow:visible}
+.signal-caption,.signal-legend{font-family:var(--mono);font-size:9px;letter-spacing:1.7px;text-transform:uppercase;color:#A9BBAE}
+.signal-caption{margin-bottom:4px;text-align:center}
+.signal-legend{display:flex;justify-content:center;gap:16px;margin-top:4px}
+.signal-legend span::before{content:"";display:inline-block;width:5px;height:5px;margin-right:6px;border-radius:50%;background:currentColor;vertical-align:1px}
+.signal-legend span:last-child{color:var(--coral)}
+header.mast .status{color:var(--lime);border-color:rgba(201,242,124,.28);background:rgba(201,242,124,.07)}
+header.mast .status.partial{color:#FFD2B9;border-color:rgba(242,140,107,.4);background:rgba(242,140,107,.1)}
+h2{font-family:var(--display);font-weight:400;font-size:36px;margin:0 0 24px;line-height:1.12;letter-spacing:-.5px}
+body>section>h2::before{content:counter(report-section,decimal-leading-zero);display:block;margin-bottom:10px;color:var(--accent);font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:2px;line-height:1}
+h3{font-family:var(--serif);font-weight:600;font-size:20px;margin:0 0 10px;line-height:1.35}
 .muted,.evidence,.panel-title{color:var(--mute)}
-.evidence{font-size:12.5px;margin-top:12px}
-section{padding:8px 0 28px;border-bottom:1px solid var(--hair)}
+.evidence{font-family:var(--mono);font-size:11px;line-height:1.7;margin-top:14px;overflow-wrap:anywhere}
+section{position:relative;padding:36px 0;border-bottom:1px solid var(--hair)}
 section:last-of-type{border-bottom:0}
-.metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;margin:22px 0;border:1px solid var(--hair);background:var(--softer)}
-.metric{padding:13px 14px;border-right:1px solid var(--hair);background:transparent;border-radius:0}
+.metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;margin:30px 0;padding:0;border-top:1px solid var(--ink);border-bottom:1px solid var(--hair);background:transparent}
+.metric{position:relative;padding:24px 18px;border-right:1px solid var(--hair);background:transparent;border-radius:0}
+.metric:first-child{padding-left:0}
 .metric:last-child{border-right:0}
-.metric span{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:1.2px;text-transform:uppercase;color:var(--mute);font-weight:500}
-.metric strong{display:block;font-size:21px;font-weight:600;margin-top:5px;letter-spacing:-.3px;color:var(--ink)}
-.panel,.prose-card,.insight-card{background:var(--softer);border:1px solid var(--hair);border-radius:2px;padding:16px 16px 14px}
-.glance,.card-grid,.two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-.insight-card p,.prose-card p,.panel>p{line-height:1.65;color:var(--ink);margin:0}
-.panel-title{font-family:var(--serif);font-size:15px;font-weight:600;color:var(--ink);margin-bottom:10px}
-.bar-row{display:grid;grid-template-columns:minmax(88px,1fr) 3fr auto;gap:12px;align-items:center;margin:11px 0;font-size:13px}
-.bar-track{height:10px;border-radius:2px;background:#EDE9E0;overflow:hidden}
-.bar-track i{display:block;height:100%;border-radius:2px;background:var(--bar-1)}
+.metric span{display:block;font-family:var(--mono);font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:var(--mute);font-weight:500}
+.metric strong{display:block;font-family:var(--display);font-size:34px;font-weight:400;margin-top:8px;letter-spacing:-.5px;color:var(--ink);line-height:1.1}
+.panel,.prose-card,.insight-card{background:rgba(255,254,250,.8);border:1px solid var(--hair);border-radius:0;padding:24px}
+.panel{border-top:2px solid var(--ink)}
+.glance{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:1px;background:var(--hair);border:1px solid var(--hair)}
+.glance .prose-card{border:0;padding:28px}
+.glance .prose-card:nth-child(1){grid-column:span 7;background:#E7F0D9}
+.glance .prose-card:nth-child(2){grid-column:span 5}
+.glance .prose-card:nth-child(3){grid-column:span 5;background:#F5E9D6}
+.glance .prose-card:nth-child(4){grid-column:span 7}
+.card-grid,.two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+.insight-card p,.prose-card p,.panel>p{line-height:1.75;color:var(--ink)}
+.prose-card>h3{font-size:23px}
+.panel-title{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:var(--ink);margin-bottom:16px}
+.bar-row{display:grid;grid-template-columns:minmax(96px,1.2fr) 3fr auto;gap:14px;align-items:center;margin:15px 0;font-size:12px}
+.bar-track{height:7px;border-radius:0;background:#E2E3D9;overflow:hidden}
+.bar-track i{display:block;height:100%;border-radius:0;background:var(--bar-1)}
 .bar-row[data-bar="2"] .bar-track i{background:var(--bar-2)}
 .bar-row[data-bar="3"] .bar-track i{background:var(--bar-3)}
 .bar-row[data-bar="4"] .bar-track i{background:var(--bar-4)}
 .bar-row[data-bar="5"] .bar-track i{background:var(--bar-5)}
-.bar-row strong{font-family:var(--mono);font-size:12.5px;font-weight:600}
-.empty{padding:16px 18px;color:var(--mute);border:1px dashed var(--hair);border-radius:2px;background:var(--soft)}
-.callout{padding:14px 16px;border:1px solid var(--hair);border-left:3px solid var(--accent);background:var(--soft);border-radius:0 2px 2px 0;margin:14px 0}
-.copy{font-family:var(--mono);font-size:.9em;background:var(--soft);border:1px solid var(--hair);padding:12px;border-radius:2px;white-space:pre-wrap}
-.table-wrap{overflow:auto;margin:14px 0;border:1px solid var(--hair);border-radius:2px}
-table:not(.sr-only){width:100%;border-collapse:collapse;background:var(--softer);font-size:14px}
-td,th{padding:10px 12px;text-align:left;border-bottom:1px solid var(--hair);vertical-align:top}
-th{background:var(--soft);color:var(--ink);font-weight:600;font-size:12.5px;border-bottom:1px solid var(--accent)}
+.bar-row strong{font-family:var(--mono);font-size:12px;font-weight:600}
+.empty{padding:20px 22px;color:var(--mute);border:1px dashed var(--hair);border-left:3px solid var(--hair);border-radius:0;background:rgba(255,254,250,.55)}
+.callout{padding:18px 20px;border:0;border-left:4px solid var(--accent);background:var(--soft);border-radius:0;margin:16px 0}
+.copy-shell{position:relative;margin:18px 0}
+.copy{font-family:var(--mono);font-size:13px;line-height:1.7;background:var(--night);color:#EAF2E7;border:0;padding:48px 22px 22px;border-radius:0;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2}
+.copy-shell .copy{margin:0}
+.copy-button{position:absolute;top:8px;right:8px;z-index:1;min-width:64px;min-height:36px;padding:6px 10px;border:1px solid #59756A;background:transparent;color:var(--lime);font-family:var(--mono);font-size:10px;letter-spacing:.5px;cursor:pointer}
+.copy-button:hover{background:rgba(201,242,124,.1)}
+.copy-button[data-state="copied"]{background:var(--lime);color:var(--night);border-color:var(--lime)}
+.copy-button[data-state="error"]{color:#FFD2B9;border-color:var(--coral)}
+.table-wrap{overflow:auto;margin:18px 0;border:1px solid var(--hair);border-radius:0;background:rgba(255,254,250,.7)}
+table:not(.sr-only){width:100%;border-collapse:collapse;background:transparent;font-size:13px}
+td,th{padding:13px 14px;text-align:left;border-bottom:1px solid var(--hair);vertical-align:top}
+th{background:#E9ECE2;color:var(--ink);font-family:var(--mono);font-weight:600;font-size:10px;letter-spacing:.7px;text-transform:uppercase;border-bottom:1px solid var(--ink)}
 tbody tr:last-child td{border-bottom:0}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-.status{display:inline-flex;align-items:center;padding:4px 9px;border-radius:2px;border:1px solid var(--hair);background:var(--soft);color:var(--accent);font-family:var(--mono);font-size:11.5px;letter-spacing:.4px}
-.status.partial{color:#9A6B16;border-color:#E2D2A8;background:#F7F0DE}
-nav.toc{position:sticky;top:0;z-index:100;display:flex;flex-wrap:nowrap;align-items:center;gap:4px 16px;margin:0 -22px;padding:0 22px;min-height:var(--toc-height);background:rgba(251,250,247,.96);border-bottom:1px solid var(--hair);backdrop-filter:saturate(115%) blur(10px);-webkit-backdrop-filter:saturate(115%) blur(10px);overflow-x:auto;scrollbar-width:none}
+.status{display:inline-flex;align-items:center;padding:6px 11px;border-radius:100px;border:1px solid var(--hair);background:var(--soft);color:var(--accent);font-family:var(--mono);font-size:10px;letter-spacing:.4px}
+.status.partial{color:#8A5A18;border-color:#DDC797;background:#F7E9C9}
+nav.toc{position:sticky;top:0;z-index:100;display:flex;flex-wrap:nowrap;align-items:center;gap:4px 18px;margin:32px -32px 0;padding:0 32px;min-height:var(--toc-height);background:rgba(244,242,235,.92);border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);backdrop-filter:saturate(115%) blur(14px);-webkit-backdrop-filter:saturate(115%) blur(14px);overflow-x:auto;scrollbar-width:none}
 nav.toc::-webkit-scrollbar{display:none}
-nav.toc .wordmark{font-family:var(--serif);font-weight:700;font-size:15px;color:var(--ink);margin-right:8px;white-space:nowrap;flex:none}
-nav.toc .wordmark span{color:var(--accent)}
-nav.toc a,nav.toc span{color:var(--mute);font-family:var(--mono);font-size:11.5px;letter-spacing:.3px;padding:0;border:0;background:transparent;border-radius:0;text-decoration:none;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center}
-nav.toc a:hover{color:var(--accent)}
-nav.toc span{opacity:.55}
-nav.toc .coach-links{display:inline-flex;gap:4px 16px;margin-left:8px;padding-left:16px;border-left:1px solid var(--hair)}
-.coach-action{margin:18px 0 8px}
-.timezone{display:flex;gap:10px;align-items:center;color:var(--mute);font-size:12.5px;margin-bottom:12px;font-family:var(--mono)}
-.timezone select{background:var(--bg);color:var(--ink);border:1px solid var(--hair);border-radius:2px;padding:6px 8px;font-family:var(--sans)}
-blockquote{margin:12px 0;padding:10px 14px;border-left:3px solid var(--accent);background:var(--soft);color:var(--ink);font-family:var(--serif);font-style:italic}
-.mermaid{background:var(--softer);border:1px solid var(--hair);border-radius:2px;padding:18px;margin:18px 0;overflow-x:auto}
-@media(max-width:760px){
+nav.toc .wordmark{font-family:var(--display);font-weight:400;font-size:21px;color:var(--ink);margin-right:10px;white-space:nowrap;flex:none}
+nav.toc .wordmark span{color:var(--accent);margin-left:.28em}
+nav.toc a,nav.toc span{position:relative;color:var(--mute);font-family:var(--mono);font-size:11px;letter-spacing:.25px;padding:0;border:0;background:transparent;border-radius:0;text-decoration:none;white-space:nowrap;min-height:48px;display:inline-flex;align-items:center}
+nav.toc a[hidden]{display:none}
+nav.toc a:hover,nav.toc a[aria-current="location"]{color:var(--accent);text-decoration:none}
+nav.toc a[aria-current="location"]::after{content:"";position:absolute;left:0;right:0;bottom:4px;height:2px;background:var(--coral)}
+nav.toc span{opacity:.5}
+nav.toc .coach-links{display:inline-flex;gap:4px 18px;margin-left:8px;padding-left:18px;border-left:1px solid var(--hair)}
+.coach-action{position:relative;isolation:isolate;overflow:hidden;margin:32px 0 0;padding:38px 42px;border:0;border-left:0;background:var(--night);color:#F3F7EE}
+.coach-action::before{content:"01";position:absolute;z-index:-1;right:22px;top:-58px;font-family:var(--display);font-size:210px;line-height:1;color:rgba(201,242,124,.08)}
+.coach-action h3{font-family:var(--mono);font-size:11px;letter-spacing:1.8px;text-transform:uppercase;color:var(--lime);margin-bottom:12px}
+.coach-action>.coach-title>strong{display:block;max-width:780px;font-family:var(--display);font-size:36px;font-weight:400;line-height:1.15;letter-spacing:-.4px}
+.coach-action .muted{color:#B4C5B9}
+.coach-action .evidence{color:#C2D0C5;font-size:11.5px}
+.coach-action blockquote::before{color:var(--lime)}
+.coach-action article{padding:18px 0;border-top:1px solid rgba(201,242,124,.18)}
+.coach-action article h4{font-family:var(--serif);font-size:18px;margin:0 0 8px}
+.coach-action blockquote{background:rgba(255,255,255,.06);color:#F3F7EE}
+.coach-action .copy{background:var(--lime);color:var(--night)}
+.coach-action .copy-button{color:var(--night);border-color:rgba(21,46,40,.45)}
+.coach-action .copy-button[data-state="copied"]{background:var(--night);color:var(--lime)}
+.timezone{display:flex;gap:10px;align-items:center;color:var(--mute);font-size:11px;margin-bottom:16px;font-family:var(--mono)}
+.timezone select{min-height:40px;background:var(--paper);color:var(--ink);border:1px solid var(--hair);border-radius:0;padding:6px 9px;font-family:var(--sans)}
+blockquote{position:relative;margin:18px 0;padding:22px 24px 22px 54px;border:0;background:#E7EDE0;color:var(--ink);font-family:var(--display);font-size:22px;line-height:1.5;font-style:normal}
+blockquote::before{content:"“";position:absolute;left:18px;top:4px;color:var(--accent);font-family:var(--display);font-size:54px;line-height:1}
+.audit-finding{border-top:4px solid var(--accent)}
+.audit-finding[data-severity="critical"],.audit-finding[data-severity="high"]{border-top-color:var(--coral)}
+.audit-finding[data-severity="medium"]{border-top-color:#C59A4B}
+.audit-finding h3{font-family:var(--display);font-size:28px;font-weight:400;line-height:1.2}
+.evidence-session{margin:16px 0;padding:0 0 0 26px;border-left:1px solid var(--accent)}
+.evidence-session>summary,.section-disclosure>summary{position:relative;display:flex;align-items:center;gap:16px;min-height:56px;padding:14px 0;cursor:pointer;list-style:none;font-family:var(--serif);font-size:18px;font-weight:600;line-height:1.45}
+.evidence-session>summary::-webkit-details-marker,.section-disclosure>summary::-webkit-details-marker{display:none}
+.evidence-session>summary::after,.section-disclosure>summary::after{content:"+";flex:none;width:28px;height:28px;border:1px solid var(--hair);color:var(--accent);font-family:var(--mono);font-size:18px;font-weight:400;line-height:26px;text-align:center}
+.evidence-session[open]>summary::after,.section-disclosure[open]>summary::after{content:"−"}
+.evidence-session-title{min-width:0;overflow-wrap:anywhere}
+.disclosure-meta{margin-left:auto;flex:none;color:var(--mute);font-family:var(--mono);font-size:10px;font-weight:400;letter-spacing:.3px}
+.evidence-session>.panel{margin:14px 0}
+.section-disclosure{border-top:1px solid var(--hair)}
+.section-disclosure>summary{font-size:20px}
+.section-disclosure>summary::after{margin-left:8px}
+body[data-reading-mode="focus"]>section:not(.metrics):not([data-semantic-section="at_a_glance"]):not(#three-hard-truths):not(#user-audit-leverage):not(#user-audit-strengths):not(#user-audit-automation):not(#evidence-index):not(#read-coverage):not(#semantic-unavailable){display:none}
+.reading-modes{display:inline-flex;align-items:center;gap:3px;margin-right:12px;padding-right:16px;border-right:1px solid var(--hair);flex:none}
+.reading-modes button{min-height:36px;padding:5px 10px;border:1px solid transparent;background:transparent;color:var(--mute);font-family:var(--mono);font-size:10px;cursor:pointer}
+.reading-modes button[aria-pressed="true"]{border-color:var(--ink);background:var(--night);color:var(--lime)}
+.back-to-top{position:fixed;right:22px;bottom:22px;z-index:90;min-width:76px;min-height:44px;padding:10px 14px;border:1px solid #49665A;background:var(--night);color:var(--lime);box-shadow:0 8px 28px rgba(21,46,40,.16);font-family:var(--mono);font-size:11px;cursor:pointer}
+.back-to-top[hidden]{display:none}
+.mermaid{background:var(--paper);border:1px solid var(--hair);border-radius:0;padding:22px;margin:20px 0;overflow-x:auto}
+@media(max-width:900px){
+  header.mast{grid-template-columns:minmax(0,1.1fr) minmax(240px,.9fr);padding:42px 38px}
+  header.mast h1{font-size:62px}
+  .glance .prose-card:nth-child(n){grid-column:span 6}
+}
+@media(max-width:680px){
+  :root{--toc-height:54px}
   body{padding:0 16px 64px;font-size:15.5px}
-  header.mast h1{font-size:27px}
+  header.mast{grid-template-columns:1fr;gap:12px;min-height:0;margin:12px 0 0;padding:30px 24px 26px;clip-path:polygon(0 0,100% 0,100% calc(100% - 28px),calc(100% - 28px) 100%,0 100%)}
+  header.mast h1{font-size:54px;letter-spacing:-1.2px;margin-bottom:18px}
+  header.mast .subtitle{font-size:16px}
+  .eyebrow{margin-bottom:20px}
+  .signal-art{max-width:270px;width:100%;margin:0 auto -8px}
+  .signal-art svg{max-height:190px}
+  h2{font-size:31px}
   .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .metric{padding:20px 12px;border-bottom:1px solid var(--hair)}
+  .metric:first-child{padding-left:12px}
   .metric:nth-child(2n){border-right:0}
-  .metric{border-bottom:1px solid var(--hair)}
   .metric:last-child:nth-child(odd){grid-column:1/-1}
+  .metric strong{font-size:29px}
   .glance,.card-grid,.two-col{grid-template-columns:1fr}
-  nav.toc{margin:0 -16px;padding:0 16px}
+  .glance .prose-card:nth-child(n){grid-column:1}
+  .glance .prose-card{padding:24px}
+  .panel,.prose-card,.insight-card{padding:21px}
+  nav.toc{margin:24px -16px 0;padding:0 16px;gap:2px 16px}
+  nav.toc .wordmark{display:none}
+  nav.toc .coach-links{gap:2px 16px;margin-left:0;padding-left:0;border-left:0}
+  .reading-modes{margin-right:4px;padding-right:10px}
+  .reading-modes button{min-height:44px;padding:6px 9px}
+  .back-to-top{right:14px;bottom:14px}
+  .coach-action{padding:30px 24px}
+  .coach-action::before{font-size:130px;top:-28px}
+  .coach-action>.coach-title>strong{font-size:28px}
+  section{padding:30px 0}
+  .bar-row{grid-template-columns:minmax(86px,1.2fr) 2fr auto;gap:10px}
+  blockquote{padding:20px 20px 20px 46px;font-size:20px}
+  .copy{font-size:12px;padding-left:18px;padding-right:18px}
+  .copy-button{min-width:68px;min-height:44px}
+  .timezone select{min-height:44px}
 }
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-@media print{nav.toc{position:static;backdrop-filter:none}body{max-width:none}}`;
+@media print{nav.toc,.reading-progress,.copy-button,.back-to-top{display:none}body{max-width:none;background:#fff}header.mast{clip-path:none;background:#fff;color:#000;border-bottom:2px solid #000}header.mast .subtitle,header.mast .meta-line,header.mast .muted{color:#444}.signal-art{display:none}.coach-action{background:#fff;color:#000;border:2px solid #000}.coach-action .muted,.coach-action .evidence{color:#444}details>summary{display:none}details:not([open])>*:not(summary){display:block!important}}`;
 }
 
 function mermaidBootScript() {
   return `<script>(()=>{const nodes=document.querySelectorAll('.mermaid');if(!nodes.length)return;const load=()=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';s.onload=()=>{window.mermaid.initialize({startOnLoad:false,theme:'neutral',securityLevel:'strict'});window.mermaid.run({nodes:[...nodes]})};document.head.appendChild(s)};if('requestIdleCallback' in window)requestIdleCallback(load,{timeout:2000});else setTimeout(load,0)})();</script>`;
+}
+
+function signalArt(report) {
+  const { locale, t } = reportChrome(report);
+  const insights = report.insights ?? {};
+  const hours = insights.messageHours ?? {};
+  const maximum = Math.max(1, ...Object.values(hours).map((value) => Number(value) || 0));
+  const point = (radius, hour) => {
+    const angle = (hour * 15 - 90) * Math.PI / 180;
+    return { x: 180 + Math.cos(angle) * radius, y: 145 + Math.sin(angle) * radius };
+  };
+  const ticks = Array.from({ length: 24 }, (_, hour) => {
+    const count = Number(hours[hour]) || 0;
+    const start = point(82, hour);
+    const end = point(88 + (count / maximum) * 48, hour);
+    const color = hour >= 6 && hour < 12 ? '#C9F27C' : hour >= 12 && hour < 18 ? '#8EC9AE' : hour >= 18 ? '#F28C6B' : '#6C78A8';
+    return `<line x1="${start.x.toFixed(2)}" y1="${start.y.toFixed(2)}" x2="${end.x.toFixed(2)}" y2="${end.y.toFixed(2)}" stroke="${color}" stroke-width="${count ? 4 : 1.5}" stroke-linecap="round" opacity="${count ? 0.95 : 0.3}"/>`;
+  }).join('');
+  const sessionCount = Math.min(24, Number(insights.totalSessions) || 0);
+  const dots = Array.from({ length: sessionCount }, (_, index) => {
+    const p = point(118, index * 24 / Math.max(1, sessionCount));
+    return `<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="3" fill="#F4F2EB"/>`;
+  }).join('');
+  const total = number(insights.totalMessages ?? 0, t.numberLocale);
+  return `<div class="signal-art" aria-hidden="true"><div class="signal-caption">${locale === 'zh' ? '本地会话信号 · 24 小时' : 'Local session signal · 24 hours'}</div><svg viewBox="0 0 360 290"><circle cx="180" cy="145" r="82" fill="none" stroke="#47665A" stroke-width="1"/><circle cx="180" cy="145" r="65" fill="none" stroke="#47665A" stroke-width="1" stroke-dasharray="2 7"/><circle cx="180" cy="145" r="118" fill="none" stroke="#345247" stroke-width="1"/>${ticks}${dots}<text x="180" y="150" text-anchor="middle" fill="#F4F2EB" font-family="Instrument Serif,serif" font-size="58">${escapeHtml(total)}</text><text x="180" y="174" text-anchor="middle" fill="#A9BBAE" font-family="JetBrains Mono,monospace" font-size="9" letter-spacing="2">${locale === 'zh' ? '用户消息' : 'MESSAGES'}</text><text x="180" y="145" text-anchor="middle" fill="#C9F27C" font-family="JetBrains Mono,monospace" font-size="8" transform="rotate(-90 180 145) translate(0 -103)">AGENT / INSIGHT</text></svg><div class="signal-legend"><span>${locale === 'zh' ? '活跃时段' : 'Activity'}</span><span>${locale === 'zh' ? '会话轨迹' : 'Sessions'}</span></div></div>`;
+}
+
+function reportInteractionScript() {
+  return `<script>(()=>{
+    const zh=document.documentElement.lang.toLowerCase().startsWith('zh');
+    const body=document.body;
+    const progress=document.querySelector('.reading-progress i');
+    const nav=document.querySelector('nav.toc');
+    const links=nav?[...nav.querySelectorAll('a[href^="#"]')]:[];
+    const targets=links.map(link=>({link,target:document.getElementById(link.hash.slice(1))})).filter(item=>item.target);
+    let scheduled=false;
+    let backToTop=null;
+    const update=()=>{
+      scheduled=false;
+      const root=document.documentElement;
+      const available=Math.max(1,root.scrollHeight-innerHeight);
+      if(progress)progress.style.transform='scaleX('+Math.min(1,Math.max(0,scrollY/available))+')';
+      if(backToTop)backToTop.hidden=innerHeight*1.2>scrollY;
+      let current=null;
+      let currentTop=-Infinity;
+      const readingLine=innerHeight*.32;
+      for(const item of targets){
+        if(item.link.hidden)continue;
+        const top=item.target.getBoundingClientRect().top;
+        if(top<=readingLine&&top>currentTop){current=item;currentTop=top}
+      }
+      for(const {link} of targets){
+        if(current?.link===link)link.setAttribute('aria-current','location');
+        else link.removeAttribute('aria-current');
+      }
+    };
+    const schedule=()=>{if(!scheduled){scheduled=true;requestAnimationFrame(update)}};
+    addEventListener('scroll',schedule,{passive:true});
+    addEventListener('resize',schedule);
+    backToTop=document.createElement('button');
+    backToTop.type='button';backToTop.className='back-to-top';backToTop.hidden=true;
+    backToTop.textContent=zh?'↑ 顶部':'↑ Top';
+    backToTop.setAttribute('aria-label',zh?'返回报告顶部':'Back to report top');
+    backToTop.addEventListener('click',()=>scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'}));
+    body.appendChild(backToTop);
+    if(nav){
+      const group=document.createElement('div');
+      group.className='reading-modes';group.setAttribute('role','group');
+      group.setAttribute('aria-label',zh?'阅读模式':'Reading mode');
+      const status=document.createElement('span');status.className='sr-only';status.setAttribute('role','status');
+      const buttons=[['focus',zh?'聚焦':'Focus'],['full',zh?'全文':'Full']].map(([mode,label])=>{
+        const button=document.createElement('button');
+        button.type='button';button.dataset.readingMode=mode;button.textContent=label;
+        button.title=mode==='focus'
+          ?(zh?'只显示概览、行动、关键发现、证据与覆盖':'Show only overview, actions, key findings, evidence and coverage')
+          :(zh?'显示完整报告':'Show the complete report');
+        group.appendChild(button);return button;
+      });
+      group.appendChild(status);
+      nav.insertBefore(group,nav.children[1]??null);
+      const setMode=(mode)=>{
+        body.dataset.readingMode=mode;
+        for(const button of buttons)button.setAttribute('aria-pressed',String(button.dataset.readingMode===mode));
+        status.textContent=mode==='focus'
+          ?(zh?'聚焦模式：细节章节已隐藏，可随时切换全文。':'Focus mode: detail sections are hidden; switch to Full to restore them.')
+          :(zh?'全文模式：显示完整报告。':'Full mode: the complete report is visible.');
+        for(const {link,target} of targets)link.hidden=mode==='focus'&&getComputedStyle(target).display==='none';
+        update();
+      };
+      for(const button of buttons)button.addEventListener('click',()=>setMode(button.dataset.readingMode));
+      setMode('full');
+    }
+    const openEvidence=(target)=>{
+      const disclosure=target?.matches('details')?target:target?.closest('details');
+      if(disclosure)disclosure.open=true;
+    };
+    document.addEventListener('click',(event)=>{
+      const link=event.target.closest('a[href^="#"]');
+      if(link)openEvidence(document.getElementById(link.hash.slice(1)));
+    });
+    addEventListener('hashchange',()=>openEvidence(document.getElementById(location.hash.slice(1))));
+    openEvidence(document.getElementById(location.hash.slice(1)));
+    const fallbackCopy=(text)=>{
+      const area=document.createElement('textarea');
+      area.value=text;area.style.position='fixed';area.style.opacity='0';
+      document.body.appendChild(area);area.select();
+      const copied=document.execCommand('copy');area.remove();
+      if(!copied)throw new Error('copy failed');
+    };
+    for(const block of document.querySelectorAll('.copy')){
+      const shell=document.createElement('div');shell.className='copy-shell';
+      block.parentNode.insertBefore(shell,block);shell.appendChild(block);
+      const button=document.createElement('button');
+      button.type='button';button.className='copy-button';button.setAttribute('aria-live','polite');
+      button.textContent=zh?'复制':'Copy';button.setAttribute('aria-label',zh?'复制这段文本':'Copy this text');
+      shell.appendChild(button);
+      button.addEventListener('click',async()=>{
+        clearTimeout(button.resetTimer);
+        try{
+          if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(block.textContent);
+          else fallbackCopy(block.textContent);
+          button.dataset.state='copied';button.textContent=zh?'已复制':'Copied';
+        }catch{
+          button.dataset.state='error';button.textContent=zh?'复制失败':'Copy failed';
+        }
+        button.resetTimer=setTimeout(()=>{delete button.dataset.state;button.textContent=zh?'复制':'Copy'},1800);
+      });
+    }
+    update();
+  })();</script>`;
 }
 
 function renderHtmlLegacy(report) {
@@ -641,9 +875,9 @@ function renderHtmlLegacy(report) {
   const timeChart = `<label class="timezone">${escapeHtml(t.sections.timezone)} <select id="time-zone"><option value="-8">${escapeHtml(t.timezones.pt)}</option><option value="-5">${escapeHtml(t.timezones.et)}</option><option value="0">${escapeHtml(t.timezones.london)}</option><option value="1">${escapeHtml(t.timezones.cet)}</option><option value="9">${escapeHtml(t.timezones.tokyo)}</option><option value="custom">${escapeHtml(t.timezones.custom)}</option></select></label><div id="time-chart" data-utc-hours="${escapeHtml(utcHours)}">${barChart('Time of day', timeOfDayBuckets(insights.messageHours, t), { t })}</div>`;
   const tzPrompt = JSON.stringify(t.timezones.prompt);
   const timezoneScript = `<script>(()=>{const select=document.getElementById('time-zone');const root=document.getElementById('time-chart');if(!select||!root)return;const source=JSON.parse(root.dataset.utcHours||'{}');const rows=[...root.querySelectorAll('.bar-row')];const render=(offset)=>{const counts=[0,0,0,0];for(const [hour,count] of Object.entries(source)){const shifted=(Number(hour)+offset+24)%24;const index=shifted>=6&&shifted<12?0:shifted>=12&&shifted<18?1:shifted>=18?2:3;counts[index]+=Number(count)||0}const maximum=Math.max(1,...counts);rows.forEach((row,index)=>{row.querySelector('strong').textContent=String(counts[index]);row.querySelector('i').style.width=Math.round(counts[index]/maximum*100)+'%'})};const local=-new Date().getTimezoneOffset()/60;const exact=[...select.options].find((option)=>Number(option.value)===local);if(exact)select.value=exact.value;else select.value='custom';render(local);select.addEventListener('change',()=>{let offset=Number(select.value);if(select.value==='custom'){const answer=window.prompt(${tzPrompt},String(local));offset=Number(answer);if(!Number.isFinite(offset)||offset< -12||offset>14){select.value=exact?.value??'custom';offset=local}}render(offset)})})();</script>`;
-  const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,500;0,8..60,600;0,8..60,700;1,8..60,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">`;
+  const fonts = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,500;0,8..60,600;0,8..60,700;1,8..60,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">`;
   const css = reportSkinCss();
-  return `<!doctype html><html lang="${escapeHtml(htmlLang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0E6E6E"><title>${escapeHtml(brandTitle)}</title>${fonts}<style>${css}</style></head><body><header class="mast"><div class="eyebrow">${escapeHtml(t.eyebrow)}</div><h1>${escapeHtml(brandTitle)}</h1><p class="subtitle">${escapeHtml(subtitle)}</p><p class="meta-line muted">${escapeHtml(t.analyzer(report.semantic?.analyzer?.host ?? 'local', report.semantic?.analyzer?.model ?? 'unknown'))}</p><span class="status ${report.parity?.structuralStatus === 'complete' ? '' : 'partial'}">${escapeHtml(report.parity?.structuralStatus ?? 'partial')} parity coverage</span></header>${toc}<section class="metrics">${statCards}</section><section><h2>${escapeHtml(t.sections.atAGlance)}</h2><div class="glance">${proseCard(t.sections.whatsWorking, glance.whatsWorking, t)}${proseCard(t.sections.whatsHindering, glance.whatsHindering, t)}${proseCard(t.sections.quickWins, glance.quickWins, t)}${proseCard(t.sections.ambitiousWorkflows, glance.ambitiousWorkflows, t)}</div>${ev(glance.evidenceSessionIds)}</section><section id="what-you-work-on"><h2>${escapeHtml(t.sections.whatYouWorkOn)}</h2>${projectAreas.length ? `<p class="muted">${escapeHtml(t.sections.projectAreaCountsNote)}</p>` : ''}${sectionCards(projectAreas, (area) => `<article class="prose-card"><h3>${escapeHtml(area.name)}</h3><p>${escapeHtml(area.description)}</p><strong>${escapeHtml(Number.isSafeInteger(area.sessionCount) && area.sessionCount >= 0 ? t.sections.estimatedSessionsCount(fmt(area.sessionCount)) : t.sections.projectAreaCountUnknown)}</strong>${ev(area.evidenceSessionIds)}</article>`, t)}</section><section><h2>${escapeHtml(t.sections.whatYouWanted)}</h2><div class="two-col"><div class="panel"><div class="panel-title">${escapeHtml(t.sections.goals)}</div>${barChart('Goal categories', insights.goalCategories, { t, domain: 'goalCategories' })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.topTools)}</div>${barChart('Top tools', insights.toolCounts, { t })}</div></div></section><section><h2>${escapeHtml(t.sections.languages)}</h2><div class="two-col"><div class="panel">${barChart('Languages', insights.languages, { t })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.sessionTypes)}</div>${barChart('Session types', insights.sessionTypes, { t, domain: 'sessionTypes' })}</div></div></section><section id="how-you-use"><h2>${escapeHtml(t.sections.howYouUse)}</h2><article class="panel"><p>${escapeHtml(interaction.narrative ?? t.sections.interactionUnavailable)}</p><div class="callout"><strong>${escapeHtml(interaction.keyPattern ?? t.sections.noKeyPattern)}</strong></div>${ev(interaction.evidenceSessionIds)}</article></section><section><h2>${escapeHtml(t.sections.responseTime)}</h2><div class="panel">${barChart('Response time distribution', responseTimeBuckets(insights.userResponseTimes), { t })}<p class="muted">${escapeHtml(t.sections.medianAverage(coverageNumber(insights.medianResponseTime), coverageNumber(insights.averageResponseTime)))}</p></div></section><section><h2>${escapeHtml(t.sections.multiClauding)}</h2><div class="metrics">${[[t.sections.overlapPairs, insights.multiClauding?.overlapEvents ?? 0], [t.sections.sessionsInvolved, insights.multiClauding?.sessionsInvolved ?? 0], [t.sections.messagesDuringOverlap, insights.multiClauding?.userMessagesDuring ?? 0]].map(([label, value]) => `<article class="metric"><span>${escapeHtml(label)}</span><strong>${fmt(value)}</strong></article>`).join('')}</div></section><section><h2>${escapeHtml(t.sections.timeOfDay)}</h2><div class="two-col"><div class="panel">${timeChart}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.toolErrors)}</div>${barChart('Tool errors', insights.toolErrorCategories, { t, domain: 'toolErrorCategories' })}</div></div></section><section id="impressive-things"><h2>${escapeHtml(t.sections.impressiveThings)}</h2><p class="muted">${escapeHtml(working.intro ?? '')}</p>${sectionCards(working.impressiveWorkflows, (workflow) => `<article class="prose-card"><h3>${escapeHtml(workflow.title)}</h3><p>${escapeHtml(workflow.description)}</p>${ev(workflow.evidenceSessionIds)}</article>`, t)}</section><section><h2>${escapeHtml(t.sections.whatHelpedMost)}</h2><div class="two-col"><div class="panel">${barChart(t.sections.primarySuccesses, insights.primarySuccesses ?? insights.helpfulness, { t, domain: insights.primarySuccesses ? 'primarySuccesses' : 'helpfulness' })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.outcomes)}</div>${barChart('Outcomes', insights.outcomes, { order: outcomeOrder, t, domain: 'outcomes' })}</div></div></section><section id="where-things-go-wrong"><h2>${escapeHtml(t.sections.whereThingsGoWrong)}</h2><p class="muted">${escapeHtml(friction.intro ?? '')}</p>${sectionCards(friction.categories, (category) => `<article class="prose-card"><h3>${escapeHtml(category.category)}</h3><p>${escapeHtml(category.description)}</p>${(category.examples ?? []).map((example) => `<div class="callout">${escapeHtml(example.text)}${ev(example.evidenceSessionIds)}</div>`).join('')}</article>`, t)}</section><section><h2>${escapeHtml(t.sections.primaryFriction)}</h2><div class="two-col"><div class="panel">${barChart(t.sections.frictionTypes, insights.friction, { t, domain: 'friction' })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.inferredSatisfaction)}</div>${barChart('Satisfaction', insights.satisfaction, { order: satisfactionOrder, t, domain: 'satisfaction' })}</div></div></section><section id="features-to-try"><h2>${escapeHtml(t.sections.existingFeatures)}</h2><h3>${escapeHtml(t.sections.claudeMdAdditions)}</h3>${sectionCards(suggestions.instructionAdditions, (item) => `<article class="prose-card"><p>${escapeHtml(item.addition)}</p><p class="muted">${escapeHtml(item.why)}</p><div class="copy">${escapeHtml(item.promptScaffold)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}<h3>${escapeHtml(t.sections.featuresToTry)}</h3>${sectionCards(suggestions.featuresToTry, (item) => `<article class="prose-card"><h3>${escapeHtml(item.feature)}</h3><p>${escapeHtml(item.oneLiner)} ${escapeHtml(item.whyForYou)}</p><div class="copy">${escapeHtml(item.exampleCode)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}</section><section id="new-usage-patterns"><h2>${escapeHtml(t.sections.newWays)}</h2>${sectionCards(suggestions.usagePatterns, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.suggestion)} ${escapeHtml(item.detail)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}</section><section id="on-the-horizon"><h2>${escapeHtml(t.sections.onTheHorizon)}</h2><p class="muted">${escapeHtml(horizon.intro ?? '')}</p>${sectionCards(horizon.opportunities, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.whatsPossible)} ${escapeHtml(item.howToTry)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}</section><section><h2>${escapeHtml(ending.headline ?? t.sections.memorableMoment)}</h2><article class="panel"><p>${escapeHtml(ending.detail ?? t.sections.noQualitativeMoment)}</p>${ev(ending.evidenceSessionIds)}</article></section><section><h2>${escapeHtml(t.sections.readCoverage)}</h2><p class="muted">${escapeHtml(projectFilterNote(report))}</p><div class="table-wrap"><table><thead><tr><th>${escapeHtml(t.sections.source)}</th><th>${escapeHtml(t.sections.coverage)}</th><th>${escapeHtml(t.sections.found)}</th><th>${escapeHtml(t.sections.selected)}</th><th>${escapeHtml(t.sections.limited)}</th><th>${escapeHtml(t.sections.partial)}</th><th>${escapeHtml(t.sections.skipped)}</th><th>${escapeHtml(t.sections.notes)}</th></tr></thead><tbody>${coverageRows}</tbody></table></div></section>${timezoneScript}${mermaidBootScript()}</body></html>`;
+  return `<!doctype html><html lang="${escapeHtml(htmlLang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#152E28"><title>${escapeHtml(brandTitle)}</title>${fonts}<style>${css}</style></head><body><div class="reading-progress" aria-hidden="true"><i></i></div><header class="mast"><div class="mast-copy"><div class="eyebrow">${escapeHtml(t.eyebrow)}</div><h1>${escapeHtml(brandTitle)}</h1><p class="subtitle">${escapeHtml(subtitle)}</p><p class="meta-line muted">${escapeHtml(t.analyzer(report.semantic?.analyzer?.host ?? 'local', report.semantic?.analyzer?.model ?? 'unknown'))}</p><span class="status ${report.parity?.structuralStatus === 'complete' ? '' : 'partial'}">${escapeHtml(report.parity?.structuralStatus ?? 'partial')} parity coverage</span></div>${signalArt(report)}</header>${toc}<section class="metrics">${statCards}</section><section><h2>${escapeHtml(t.sections.atAGlance)}</h2><div class="glance">${proseCard(t.sections.whatsWorking, glance.whatsWorking, t)}${proseCard(t.sections.whatsHindering, glance.whatsHindering, t)}${proseCard(t.sections.quickWins, glance.quickWins, t)}${proseCard(t.sections.ambitiousWorkflows, glance.ambitiousWorkflows, t)}</div>${ev(glance.evidenceSessionIds)}</section><section id="what-you-work-on"><h2>${escapeHtml(t.sections.whatYouWorkOn)}</h2>${projectAreas.length ? `<p class="muted">${escapeHtml(t.sections.projectAreaCountsNote)}</p>` : ''}${sectionCards(projectAreas, (area) => `<article class="prose-card"><h3>${escapeHtml(area.name)}</h3><p>${escapeHtml(area.description)}</p><strong>${escapeHtml(Number.isSafeInteger(area.sessionCount) && area.sessionCount >= 0 ? t.sections.estimatedSessionsCount(fmt(area.sessionCount)) : t.sections.projectAreaCountUnknown)}</strong>${ev(area.evidenceSessionIds)}</article>`, t)}</section><section><h2>${escapeHtml(t.sections.whatYouWanted)}</h2><div class="two-col"><div class="panel"><div class="panel-title">${escapeHtml(t.sections.goals)}</div>${barChart('Goal categories', insights.goalCategories, { t, domain: 'goalCategories' })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.topTools)}</div>${barChart('Top tools', insights.toolCounts, { t })}</div></div></section><section><h2>${escapeHtml(t.sections.languages)}</h2><div class="two-col"><div class="panel">${barChart('Languages', insights.languages, { t })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.sessionTypes)}</div>${barChart('Session types', insights.sessionTypes, { t, domain: 'sessionTypes' })}</div></div></section><section id="how-you-use"><h2>${escapeHtml(t.sections.howYouUse)}</h2><article class="panel"><p>${escapeHtml(interaction.narrative ?? t.sections.interactionUnavailable)}</p><div class="callout"><strong>${escapeHtml(interaction.keyPattern ?? t.sections.noKeyPattern)}</strong></div>${ev(interaction.evidenceSessionIds)}</article></section><section><h2>${escapeHtml(t.sections.responseTime)}</h2><div class="panel">${barChart('Response time distribution', responseTimeBuckets(insights.userResponseTimes), { t })}<p class="muted">${escapeHtml(t.sections.medianAverage(coverageNumber(insights.medianResponseTime), coverageNumber(insights.averageResponseTime)))}</p></div></section><section><h2>${escapeHtml(t.sections.multiClauding)}</h2><div class="metrics">${[[t.sections.overlapPairs, insights.multiClauding?.overlapEvents ?? 0], [t.sections.sessionsInvolved, insights.multiClauding?.sessionsInvolved ?? 0], [t.sections.messagesDuringOverlap, insights.multiClauding?.userMessagesDuring ?? 0]].map(([label, value]) => `<article class="metric"><span>${escapeHtml(label)}</span><strong>${fmt(value)}</strong></article>`).join('')}</div></section><section><h2>${escapeHtml(t.sections.timeOfDay)}</h2><div class="two-col"><div class="panel">${timeChart}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.toolErrors)}</div>${barChart('Tool errors', insights.toolErrorCategories, { t, domain: 'toolErrorCategories' })}</div></div></section><section id="impressive-things"><h2>${escapeHtml(t.sections.impressiveThings)}</h2><p class="muted">${escapeHtml(working.intro ?? '')}</p>${sectionCards(working.impressiveWorkflows, (workflow) => `<article class="prose-card"><h3>${escapeHtml(workflow.title)}</h3><p>${escapeHtml(workflow.description)}</p>${ev(workflow.evidenceSessionIds)}</article>`, t)}</section><section><h2>${escapeHtml(t.sections.whatHelpedMost)}</h2><div class="two-col"><div class="panel">${barChart(t.sections.primarySuccesses, insights.primarySuccesses ?? insights.helpfulness, { t, domain: insights.primarySuccesses ? 'primarySuccesses' : 'helpfulness' })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.outcomes)}</div>${barChart('Outcomes', insights.outcomes, { order: outcomeOrder, t, domain: 'outcomes' })}</div></div></section><section id="where-things-go-wrong"><h2>${escapeHtml(t.sections.whereThingsGoWrong)}</h2><p class="muted">${escapeHtml(friction.intro ?? '')}</p>${sectionCards(friction.categories, (category) => `<article class="prose-card"><h3>${escapeHtml(category.category)}</h3><p>${escapeHtml(category.description)}</p>${(category.examples ?? []).map((example) => `<div class="callout">${escapeHtml(example.text)}${ev(example.evidenceSessionIds)}</div>`).join('')}</article>`, t)}</section><section><h2>${escapeHtml(t.sections.primaryFriction)}</h2><div class="two-col"><div class="panel">${barChart(t.sections.frictionTypes, insights.friction, { t, domain: 'friction' })}</div><div class="panel"><div class="panel-title">${escapeHtml(t.sections.inferredSatisfaction)}</div>${barChart('Satisfaction', insights.satisfaction, { order: satisfactionOrder, t, domain: 'satisfaction' })}</div></div></section><section id="features-to-try"><h2>${escapeHtml(t.sections.existingFeatures)}</h2><h3>${escapeHtml(t.sections.claudeMdAdditions)}</h3>${sectionCards(suggestions.instructionAdditions, (item) => `<article class="prose-card"><p>${escapeHtml(item.addition)}</p><p class="muted">${escapeHtml(item.why)}</p><div class="copy">${escapeHtml(item.promptScaffold)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}<h3>${escapeHtml(t.sections.featuresToTry)}</h3>${sectionCards(suggestions.featuresToTry, (item) => `<article class="prose-card"><h3>${escapeHtml(item.feature)}</h3><p>${escapeHtml(item.oneLiner)} ${escapeHtml(item.whyForYou)}</p><div class="copy">${escapeHtml(item.exampleCode)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}</section><section id="new-usage-patterns"><h2>${escapeHtml(t.sections.newWays)}</h2>${sectionCards(suggestions.usagePatterns, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.suggestion)} ${escapeHtml(item.detail)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}</section><section id="on-the-horizon"><h2>${escapeHtml(t.sections.onTheHorizon)}</h2><p class="muted">${escapeHtml(horizon.intro ?? '')}</p>${sectionCards(horizon.opportunities, (item) => `<article class="prose-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.whatsPossible)} ${escapeHtml(item.howToTry)}</p><div class="copy">${escapeHtml(item.copyablePrompt)}</div>${ev(item.evidenceSessionIds)}</article>`, t)}</section><section><h2>${escapeHtml(ending.headline ?? t.sections.memorableMoment)}</h2><article class="panel"><p>${escapeHtml(ending.detail ?? t.sections.noQualitativeMoment)}</p>${ev(ending.evidenceSessionIds)}</article></section><section><h2>${escapeHtml(t.sections.readCoverage)}</h2><p class="muted">${escapeHtml(projectFilterNote(report))}</p><div class="table-wrap"><table><thead><tr><th>${escapeHtml(t.sections.source)}</th><th>${escapeHtml(t.sections.coverage)}</th><th>${escapeHtml(t.sections.found)}</th><th>${escapeHtml(t.sections.selected)}</th><th>${escapeHtml(t.sections.limited)}</th><th>${escapeHtml(t.sections.partial)}</th><th>${escapeHtml(t.sections.skipped)}</th><th>${escapeHtml(t.sections.notes)}</th></tr></thead><tbody>${coverageRows}</tbody></table></div></section>${timezoneScript}${mermaidBootScript()}${reportInteractionScript()}</body></html>`;
 }
 
 function replaceSection(html, startMarker, endMarker, replacement) {
@@ -671,6 +905,22 @@ function markSemanticSection(html, heading, name) {
   const tagEnd = html.indexOf('>', bounds.start);
   if (tagEnd < 0 || tagEnd > bounds.end) return html;
   return `${html.slice(0, tagEnd)} data-semantic-section="${name}"${html.slice(tagEnd)}`;
+}
+
+function addCoverageDisclosure(html, report, chrome) {
+  const bounds = sectionBoundsByHeading(html, chrome.t.sections.readCoverage);
+  if (!bounds) return html;
+  const original = html.slice(bounds.start, bounds.end);
+  const headingEnd = original.indexOf('</h2>');
+  if (headingEnd < 0) return html;
+  const heading = original.slice(0, headingEnd + '</h2>'.length).replace(/^<section/, '<section id="read-coverage"');
+  const content = original.slice(headingEnd + '</h2>'.length, -'</section>'.length);
+  const data = report.parity?.dataStatus ?? 'partial';
+  const open = data === 'complete' ? '' : ' open';
+  const summary = chrome.locale === 'zh' ? '查看时间范围、Token 与来源诊断' : 'Review time scope, token usage and source diagnostics';
+  const status = taxonomyLabel('analysisStatus', data, chrome.locale);
+  const replacement = `${heading}<details class="section-disclosure coverage-disclosure"${open}><summary><span>${escapeHtml(summary)}</span><span class="disclosure-meta">${escapeHtml(status)}</span></summary>${content}</details></section>`;
+  return html.slice(0, bounds.start) + replacement + html.slice(bounds.end);
 }
 
 export function renderHtml(report) {
@@ -744,6 +994,7 @@ export function renderHtml(report) {
     } else html = available && !isUnavailableSemanticReport(report) ? markSemanticSection(html, heading, name) : removeSectionByHeading(html, heading);
   }
   if (isUnavailableSemanticReport(report)) html = html.replace('</header>', `</header><section id="semantic-unavailable"><h2>${escapeHtml(t.sections.analysisUnavailable)}</h2><div class="empty">${escapeHtml(t.sections.noAnalyzableSessions)}</div></section>`);
+  html = addCoverageDisclosure(html, report, chrome);
   html = html.replace(/<a href="#([^"]+)">[\s\S]*?<\/a>/g, (link, id) => html.includes(`id="${id}"`) ? link : '');
   return html;
 }

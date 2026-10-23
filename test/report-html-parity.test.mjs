@@ -230,6 +230,7 @@ test('partial source coverage plus incomplete audit still yields a usable Claude
   assert.match(html, /Priority findings/);
   assert.match(html, /User audit extension coverage is incomplete/);
   assert.match(html, /complete structure · partial data coverage/);
+  assert.match(html, /class="section-disclosure coverage-disclosure" open>/);
   assert.equal(compareParityReports(report, report, { candidateHtml: html }).acceptance.structuralParity, true);
 });
 
@@ -283,12 +284,18 @@ test('non-Claude default locale uses Agent Insight brand and Chinese chrome', ()
   assert.doesNotMatch(html, /href="#features-to-try"/);
 });
 
-test('HTML skin uses NewsLiquid editorial tokens', () => {
+test('HTML skin uses the editorial observatory visual system', () => {
   const html = renderHtml(summarizeSessions([session()], { semantic: semantic() }));
-  assert.match(html, /--bg:#FBFAF7/);
-  assert.match(html, /font-family:var\(--serif\)/);
+  assert.match(html, /--bg:#F4F2EB/);
+  assert.match(html, /--display:"Instrument Serif"/);
   assert.match(html, /header class="mast"/);
   assert.match(html, /class="eyebrow"/);
+  assert.match(html, /class="signal-art"/);
+  assert.match(html, /class="reading-progress"/);
+  assert.match(html, /<details id="evidence-session-[a-f0-9]+" class="evidence-session" open>/);
+  assert.match(html, /class="section-disclosure coverage-disclosure">/);
+  assert.match(html, /nav\.toc a\[hidden\]\{display:none\}/);
+  assert.match(html, /data-reading-mode/);
   assert.match(html, /nav class="toc"/);
   assert.match(html, /class="wordmark"/);
   assert.match(html, /\.mermaid\{/);
