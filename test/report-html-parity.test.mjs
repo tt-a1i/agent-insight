@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { summarizeSessions } from '../src/analyze.mjs';
-import { renderHtml } from '../src/report.mjs';
+import { renderHtml, renderMarkdown } from '../src/report.mjs';
 import { compareParityReports } from '../src/parity.mjs';
 
 function session() {
@@ -67,6 +67,23 @@ function semantic() {
   };
 }
 
+test('metadata signals remain inspectable without inventing a diagnosis or task-spec advice', () => {
+  for (const locale of ['en', 'zh']) {
+    const report = summarizeSessions([{ ...session(), shortUserTurns: 3, correctionTurns: 0, lastToolSequence: ['Bash'] }], { locale });
+    const html = renderHtml(report);
+    const section = html.match(/<section id="efficiency-signals"[\s\S]*?<\/section>/)?.[0];
+    assert.ok(section);
+    assert.match(section, /claude · internal-a/);
+    assert.match(section, locale === 'en' ? /Short-turn share/ : /短消息占比/);
+    assert.match(section, locale === 'en' ? /actual verification remains unknown/ : /是否实际完成验证仍未知/);
+    assert.match(section, /<td>1<\/td><td>—<\/td><td>0.5<\/td>/);
+    assert.doesNotMatch(section, /efficiency-skeleton|never checked|underspecified|偏高暗示/);
+    const markdown = renderMarkdown(report);
+    assert.match(markdown, locale === 'en' ? /Short-turn share/ : /短消息占比/);
+    assert.match(markdown, locale === 'en' ? /actual verification remains unknown/ : /是否实际完成验证仍未知/);
+  }
+});
+
 test('HTML follows the Claude 2.1.206 insights information architecture in order', () => {
   const report = summarizeSessions([session()], { semantic: semantic() });
   const html = renderHtml(report);
@@ -102,7 +119,7 @@ test('HTML follows the Claude 2.1.206 insights information architecture in order
   assert.match(html, /aria-label="Top tools data"/);
   assert.match(html, /2–10s/);
   assert.match(html, /Morning/);
-  assert.match(html, /Evidence: claude-session-a · claude · 2026-07-01 · \/work\/parser/);
+  assert.match(html, /Session evidence: <a href="#evidence-session-[a-f0-9]+">claude-session-a · claude · 2026-07-01 · \/work\/parser/);
   assert.match(html, /Primary successes/);
   assert.match(html, /Evidence index/);
   assert.match(html, /Please fix the parser now/);
@@ -170,23 +187,23 @@ test('fused user-audit extension HTML remains outside Claude baseline parity sco
   };
   const report = summarizeSessions([session()], { semantic: semantic(), extensions });
   const html = renderHtml(report);
-  assert.match(html, /Three hard truths/);
+  assert.match(html, /Priority findings/);
   assert.match(html, /One highest-leverage change/);
   assert.match(html, /This run’s one change/);
   assert.match(html, /Try saying this next/);
   assert.match(html, /Before edits: failing case is X/);
-  assert.match(html, /Estimated cost in cited sessions/);
+  assert.match(html, /Cited-session context only \(not an estimate of cost caused by this habit\)/);
   assert.match(html, /Reopen: \/tmp\/claude-session-a\.jsonl/);
   assert.match(html, /Copyable draft/);
   assert.match(html, /parser-regression-gate/);
   assert.match(html, /data-extension-toc/);
-  assert.ok(html.indexOf('One highest-leverage change') < html.indexOf('Three hard truths'));
-  assert.ok(html.indexOf('Three hard truths') > html.indexOf('The parser blinked first'));
+  assert.ok(html.indexOf('One highest-leverage change') < html.indexOf('<h2>Priority findings</h2>'));
+  assert.ok(html.indexOf('<h2>Priority findings</h2>') > html.indexOf('The parser blinked first'));
   assert.ok(html.indexOf('This run’s one change') < html.indexOf('<nav class="toc"'));
   const result = compareParityReports(report, report, { candidateHtml: html });
   assert.equal(result.acceptance.structuralParity, true, JSON.stringify(result.structural));
   assert.equal(result.acceptance.deterministicCorrectness, true);
-  assert.ok(result.excludedFromBaseline.htmlHeadings.includes('Three hard truths'));
+  assert.ok(result.excludedFromBaseline.htmlHeadings.includes('Priority findings'));
 });
 
 test('partial source coverage plus incomplete audit still yields a usable Claude baseline', () => {
@@ -210,7 +227,7 @@ test('partial source coverage plus incomplete audit still yields a usable Claude
   const html = renderHtml(report);
   assert.match(html, /At a Glance/);
   assert.match(html, /The parser blinked first/);
-  assert.match(html, /Three hard truths/);
+  assert.match(html, /Priority findings/);
   assert.match(html, /User audit extension coverage is incomplete/);
   assert.match(html, /complete structure · partial data coverage/);
   assert.equal(compareParityReports(report, report, { candidateHtml: html }).acceptance.structuralParity, true);
@@ -248,7 +265,7 @@ test('non-Claude default locale uses Agent Insight brand and Chinese chrome', ()
     locale: 'zh',
     semantic: {
       analyzer: { host: 'cursor', model: 'composer' },
-      sessions: [],
+      sessions: [{ id: 'cursor-a', sessionId: 'cursor-a', source: 'cursor' }],
       sections: {
         interaction_style: { narrative: '短验证循环。', keyPattern: '先写验收。', evidenceSessionIds: [] }
       }
@@ -263,7 +280,7 @@ test('non-Claude default locale uses Agent Insight brand and Chinese chrome', ()
   assert.match(html, /<h2>你如何使用 Agent<\/h2>/);
   assert.match(html, /<h2>并行会话<\/h2>/);
   assert.match(html, /<h2>最有帮助的能力<\/h2>/);
-  assert.match(html, /可尝试的能力/);
+  assert.doesNotMatch(html, /href="#features-to-try"/);
 });
 
 test('HTML skin uses NewsLiquid editorial tokens', () => {

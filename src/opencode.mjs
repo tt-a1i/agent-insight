@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { extractGenuineUserText } from './authorship.mjs';
+import { toolEventMetadata } from './tool-events.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -17,9 +18,9 @@ function increment(object, key) {
   object[key] = (object[key] ?? 0) + 1;
 }
 
-function addAnalysisMessage(messages, role, text, limit) {
+function addAnalysisMessage(messages, role, text) {
   if (typeof text !== 'string' || !text.trim()) return false;
-  messages.push({ index: messages.length + 1, role, text: text.trim().slice(0, limit) });
+  messages.push({ index: messages.length + 1, role, text });
   return true;
 }
 
@@ -27,20 +28,36 @@ export function openCodeAnalysisInput(document) {
   const info = document?.info ?? {};
   const messages = [];
   let userMessageCount = 0;
+  const toolNames = new Map();
   for (const message of document?.messages ?? []) {
     const role = String(message?.info?.role ?? '').toLowerCase();
     if (role === 'system' || role === 'developer') continue;
     let userText = false;
     for (const part of message?.parts ?? []) {
+      // OpenCode marks generated continuation prompts and attached context;
+      // their user envelope does not make them human-authored instructions.
+      if (part?.ignored === true || (role === 'user' && part?.synthetic === true)) continue;
       if (part?.type === 'text' && role === 'assistant') {
-        addAnalysisMessage(messages, 'assistant', part.text, 300);
+        addAnalysisMessage(messages, 'assistant', part.text);
       }
       if (part?.type === 'text' && role === 'user') {
         const genuine = extractGenuineUserText(part.text);
-        const added = genuine ? addAnalysisMessage(messages, 'user', genuine, 500) : false;
+        const added = genuine ? addAnalysisMessage(messages, 'user', genuine) : false;
         if (added) userText = true;
       }
-      if (part?.type === 'tool') addAnalysisMessage(messages, 'tool', part.tool ?? 'unknown', 120);
+      if (part?.type === 'tool') {
+        const value = { ...part, id: undefined, call_id: part.callID };
+        const call = toolEventMetadata(value, 'call', toolNames);
+        messages.push({ index: messages.length + 1, role: 'tool', text: call.name, tool: call });
+        if (['completed', 'error', 'failed', 'denied'].includes(String(part.state?.status ?? '').toLowerCase())) {
+          const result = toolEventMetadata(value, 'result', toolNames);
+          messages.push({ index: messages.length + 1, role: 'tool', text: result.name, tool: result });
+        }
+      }
+    }
+    if (role === 'assistant' && message?.info?.error) {
+      const status = message.info.error.name === 'MessageAbortedError' ? 'cancelled' : 'failed';
+      messages.push({ index: messages.length + 1, role: 'agent_event', text: '', agent: { status } });
     }
     if (userText) userMessageCount += 1;
   }
@@ -96,6 +113,7 @@ export function normaliseOpenCodeExport(document, fallback = {}) {
     const role = String(messageInfo.role ?? '').toLowerCase();
     if (role === 'user') session.userMessages += 1;
     if (role === 'assistant') session.assistantMessages += 1;
+    if (role === 'assistant' && messageInfo.error && messageInfo.error.name !== 'MessageAbortedError') session.turnFailures += 1;
     increment(session.providers, messageInfo.model?.providerID);
     increment(session.models, messageInfo.model?.modelID);
     if (messageInfo.tokens) {
@@ -167,6 +185,7 @@ export async function collectOpenCodeSessions({
         mode: 'official CLI export (root sessions only)',
         rootsFound: 0,
         filesFound: 0,
+        filesSelected: 0,
         filesSkipped: 0,
         filesPartial: 0,
         filesTooLarge: 0,
@@ -208,6 +227,7 @@ export async function collectOpenCodeSessions({
       mode: 'official CLI export (root sessions only)',
       rootsFound: 1,
       filesFound: entries.length,
+      filesSelected: entries.length,
       filesSkipped: failures,
       filesPartial: 0,
       filesTooLarge: 0,

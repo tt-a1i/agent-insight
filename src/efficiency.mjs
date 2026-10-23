@@ -6,22 +6,12 @@
  * DETERMINISTIC_FIELDS baseline scoring.
  *
  * Signals:
- *   clarification_density  short user turns / total user turns
+ *   clarification_density  short recorded user turns / total user turns (legacy key)
  *   correction_rate        correction-like user turns / total user turns
  *   dominant_tool_share    top tool call count / total tool calls
  *   turns_per_hour         (user + assistant turns) / duration hours
- *   verification_gap       last N turns contain no verification tool
+ *   verification_gap       last N tool names contain no verification keyword
  */
-
-const SHORT_TURN_THRESHOLD = 40;
-
-const CORRECTION_PATTERN = /(?:不对|别|不要|重(?:新|做)|停下|等等|错了|换|stop|no\b|wrong|redo|revert|undo|不对|不行|不是)/i;
-
-const VERIFICATION_TOOLS = new Set([
-  'test', 'grep', 'glob', 'diff',
-  'mcp__claude_preview__preview_eval', 'mcp__claude_preview__preview_screenshot',
-  'verify', 'check', 'lint', 'build'
-]);
 
 const VERIFICATION_TOOL_PATTERN = /(?:test|grep|glob|diff|preview|verify|check|lint|build)/i;
 
@@ -109,8 +99,7 @@ export function sessionEfficiency(session) {
  */
 export function corpusEfficiency(sessions) {
   const perSession = sessions
-    .map((session, index) => ({ index, ...sessionEfficiency(session) }))
-    .filter((entry) => entry !== null);
+    .map((session, index) => ({ index, sessionId: session.id ?? null, source: session.source ?? null, ...sessionEfficiency(session) }));
 
   if (perSession.length === 0) {
     return {
@@ -236,94 +225,3 @@ function round(value, digits = 3) {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
 }
-
-/**
- * Fixed mapping from efficiency signals to existing AUDIT_CATEGORIES.
- * Used to inject deterministic findings alongside LLM audit findings.
- */
-export const EFFICIENCY_TO_CATEGORY = Object.freeze({
-  clarification_density: 'goal_clarity',
-  correction_rate: 'direction_churn',
-  dominant_tool_share: 'premature_execution',
-  verification_gap: 'acceptance_criteria'
-});
-
-/**
- * Build pre-shaped audit findings from flagged efficiency signals.
- * Each finding has the same shape as LLM-produced findings, with
- * categories from AUDIT_CATEGORIES so they pass validateFinding.
- *
- * @param {object} corpus — output of corpusEfficiency
- * @param {object[]} evidenceSessions — report.semantic.sessions for locator matching
- * @returns {object[]} findings in audit finding shape
- */
-export function efficiencyToFindings(corpus, evidenceSessions = []) {
-  if (!corpus?.flagged?.length) return [];
-  const findings = [];
-  for (const flagged of corpus.flagged) {
-    const session = evidenceSessions[flagged.index];
-    const locator = session
-      ? { sessionId: session.id, messageIndexes: [] }
-      : { sessionId: null, messageIndexes: [] };
-    for (const issue of flagged.issues) {
-      const category = EFFICIENCY_TO_CATEGORY[issue.signal];
-      if (!category) continue;
-      findings.push({
-        category,
-        severity: issue.severity,
-        evidencePosture: 'established_pattern',
-        accusation: efficiencyAccusation(issue.signal),
-        explanation: efficiencyExplanation(issue.signal, issue.value, issue.threshold),
-        quotations: [],
-        locators: [locator],
-        occurrenceCount: 1,
-        betterAlternative: efficiencyAlternative(issue.signal),
-        copyablePrompt: efficiencyCopyable(issue.signal),
-        rootCause: issue.signal
-      });
-    }
-  }
-  return findings;
-}
-
-function efficiencyAccusation(signal) {
-  const map = {
-    clarification_density: 'High clarification density suggests the initial goal was underspecified.',
-    correction_rate: 'Frequent course corrections indicate the agent repeatedly diverged from intent.',
-    dominant_tool_share: 'One tool dominates, suggesting trial-and-error rather than targeted execution.',
-    verification_gap: 'Session ended without a verification step — the result was never checked.'
-  };
-  return map[signal] ?? 'Efficiency signal flagged.';
-}
-
-function efficiencyExplanation(signal, value, threshold) {
-  const map = {
-    clarification_density: `Clarification density ${value} exceeds corpus threshold ${threshold}.`,
-    correction_rate: `Correction rate ${value} exceeds corpus threshold ${threshold}.`,
-    dominant_tool_share: `Dominant tool share ${value} exceeds corpus threshold ${threshold}.`,
-    verification_gap: 'No verification tool (test, grep, diff, build, preview) in the last 5 tool calls.'
-  };
-  return map[signal] ?? '';
-}
-
-function efficiencyAlternative(signal) {
-  const map = {
-    clarification_density: 'Open with a full task spec: goal, current state, gaps, execution order, acceptance criteria, constraints.',
-    correction_rate: 'Give the agent a bounded scope and explicit "stop when X" conditions; check direction after the first tool batch.',
-    dominant_tool_share: 'Plan the approach before executing; state which tools to use and why before running them.',
-    verification_gap: 'End every task with an explicit verification step: run the test, grep the output, or open the result.'
-  };
-  return map[signal] ?? '';
-}
-
-function efficiencyCopyable(signal) {
-  const map = {
-    clarification_density: 'Goal: <what>. Current state: <files already changed>. Gaps: <what is not done>. Execution order: <numbered steps>. Acceptance criteria: <how to verify>. Constraints: <what not to do>.',
-    correction_rate: 'Do only step 1-3 first. Stop and report what you changed. Wait for my confirmation before continuing.',
-    dominant_tool_share: 'Before running any command, state: which tool, why, and what result you expect. Then run it.',
-    verification_gap: 'After making changes, run <test command> or open <file> to verify. Report the result before saying done.'
-  };
-  return map[signal] ?? '';
-}
-
-export { SHORT_TURN_THRESHOLD, CORRECTION_PATTERN, VERIFICATION_TOOL_PATTERN, LAST_N_TURNS };

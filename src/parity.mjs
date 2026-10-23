@@ -25,6 +25,7 @@ const SECTION_FIELDS = {
 /** Agent Insight transparent-exceed / audit extension headings. Excluded from Claude baseline HTML order scoring when they form a trailing suffix. */
 const EXTENSION_HTML_HEADINGS = new Set([
   'Three hard truths',
+  'Priority findings',
   'All findings',
   'Habits that undercut you',
   'Habits worth keeping',
@@ -33,6 +34,7 @@ const EXTENSION_HTML_HEADINGS = new Set([
   'Evidence index',
   'Read coverage',
   '三条硬事实',
+  '优先关注的发现',
   '全部发现',
   '会拆台的习惯',
   '值得保留的习惯',
@@ -41,6 +43,7 @@ const EXTENSION_HTML_HEADINGS = new Set([
   '证据索引',
   '读取覆盖',
   'Efficiency signals',
+  'Session metadata signals',
   '效率信号',
 ]);
 

@@ -10,7 +10,7 @@ import { installIntegration, AGENTS } from './integrations.mjs';
 import { parseSessionFile } from './parse.mjs';
 import { buildCoachSummary, writeReport } from './report.mjs';
 import { HOSTS, resolveInsightRequest } from './interaction.mjs';
-import { failSemanticTask, finalizeSemanticRun, getSemanticRun, ingestSemanticResult, nextSemanticTask, prepareSemanticRun, semanticSubmissionForTask } from './semantic-run.mjs';
+import { prepareSemanticRun, withSemanticRunTransaction } from './semantic-run.mjs';
 import { compareParityReports, createBlindSemanticBundle, evaluateBlindSemanticRatings } from './parity.mjs';
 import { normalizeLocale } from './i18n.mjs';
 
@@ -21,8 +21,8 @@ Uses the current host model only. Independent runs always re-analyze; there is n
 Default report locale is zh (Simplified Chinese UI + model prose); Claude host HTML chrome stays English for parity.
 
 Usage:
-  agent-insight insights --host claude|codex|cursor|opencode|pi [--locale zh|en]
-  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD] [--locale zh|en]
+  agent-insight insights --host claude|codex|cursor|opencode|pi [--project <path>] [--locale zh|en]
+  agent-insight prepare --host <host> --source <agents> [--days 30|--all|--start YYYY-MM-DD --end YYYY-MM-DD] [--project <path>] [--locale zh|en]
   agent-insight semantic next|ingest|fail|finalize --run <run-id> --host <host> --model <exact-model-id-or-unknown> [--task <task-id>] [--reason <failure-code>] [--output <directory>]
   agent-insight parity compare --reference <report.json> --reference-sha256 <trusted-hash> --candidate <report.json> [--output <comparison.json>] [--blind-output <review.json>]
   agent-insight parity evaluate --review <rated-review.json> [--seed <secret>] [--output <result.json>]
@@ -43,6 +43,14 @@ Complete transcripts and tool payloads are not copied into the report.
 
 const PUBLIC_HELP = HELP;
 
+const VALUE_FLAGS = new Set([
+  'agent', 'blind-output', 'candidate', 'candidate-html', 'days', 'end', 'from',
+  'host', 'input', 'locale', 'max-discovery-files', 'max-file-mb', 'max-sessions',
+  'model', 'output', 'project', 'reason', 'reference', 'reference-sha256', 'review',
+  'run', 'scope', 'seed', 'source', 'start', 'task'
+]);
+const BOOLEAN_FLAGS = new Set(['all', 'fast', 'force', 'include-subagents', 'json']);
+
 function parseFlags(args) {
   const flags = { _: [] };
   for (let index = 0; index < args.length; index += 1) {
@@ -51,8 +59,20 @@ function parseFlags(args) {
       flags._.push(token);
       continue;
     }
-    const [key, inline] = token.slice(2).split('=', 2);
-    const value = inline ?? (args[index + 1] && !args[index + 1].startsWith('--') ? args[++index] : true);
+    const assignment = token.indexOf('=');
+    const key = token.slice(2, assignment < 0 ? undefined : assignment);
+    if (!VALUE_FLAGS.has(key) && !BOOLEAN_FLAGS.has(key)) throw new Error(`Unknown option: --${key}.`);
+    const inline = assignment < 0 ? undefined : token.slice(assignment + 1);
+    const supplied = inline ?? (args[index + 1] !== undefined && !args[index + 1].startsWith('--') ? args[++index] : undefined);
+    let value;
+    if (BOOLEAN_FLAGS.has(key)) {
+      if (supplied === undefined) value = true;
+      else if (/^(true|false)$/i.test(supplied.trim())) value = supplied.trim().toLowerCase() === 'true';
+      else throw new Error(`--${key} requires true or false when a value is supplied.`);
+    } else {
+      if (supplied === undefined || !supplied.trim()) throw new Error(`--${key} requires a non-empty ${key === 'project' ? 'path' : 'value'}.`);
+      value = supplied;
+    }
     if (key === 'input') flags.input = [...(flags.input ?? []), value];
     else flags[key] = value;
   }
@@ -101,7 +121,14 @@ function maxDiscoveryFilesFrom(flags) {
   return count;
 }
 
+function projectFrom(flags, context) {
+  if (flags.project === undefined) return null;
+  if (typeof flags.project !== 'string' || !flags.project.trim()) throw new Error('--project requires a non-empty path.');
+  return resolve(context.cwd, flags.project);
+}
+
 async function runReport(flags, context) {
+  const project = projectFrom(flags, context);
   const days = daysFrom(flags);
   const source = flags.source ?? 'auto';
   const { sessions, diagnostics, sources, projectFilter } = await collectSessions({
@@ -110,30 +137,39 @@ async function runReport(flags, context) {
     cwd: context.cwd,
     inputFiles: flags.input?.filter((value) => typeof value === 'string') ?? [],
     days,
-    project: typeof flags.project === 'string' ? flags.project : undefined,
+    now: context.now,
+    project,
     includeSubagents: Boolean(flags['include-subagents']),
     maxFileBytes: maxFileBytesFrom(flags),
     maxSessionsPerSource: maxSessionsFrom(flags),
     maxDiscoveryFiles: maxDiscoveryFilesFrom(flags)
   });
-  const report = summarizeSessions(sessions, { days, sourcesScanned: diagnostics, projectFilter, locale: normalizeLocale(flags.locale) });
+  const report = summarizeSessions(sessions, { days, selectedAt: new Date(context.now).toISOString(), sourcesScanned: diagnostics, projectFilter, locale: normalizeLocale(flags.locale) });
   const output = resolve(typeof flags.output === 'string' ? flags.output : join(context.home, '.agent-insight', 'latest'));
   const files = await writeReport(report, output);
   console.log(`Agent Insight ready: ${report.totals.sessions} sessions from ${sources.join(', ') || 'no sources'}`);
   console.log(`HTML: ${files.html}`);
   console.log(`Markdown: ${files.markdown}`);
   console.log(`Agent handoff: ${files.prompt}`);
+  if (files.lockCleanupWarning) {
+    const warning = files.lockCleanupWarning;
+    console.warn(`Report created; ${warning.message} (${warning.code}, ${warning.lockPath})`);
+  }
   return { report, files };
 }
 
 async function prepareFromRequest(request, flags, context) {
+  if (flags['include-subagents']) throw new Error('Semantic insights does not support --include-subagents: merged transcripts have no complete semantic projection. Use the metadata report command for this option.');
+  request = { ...request, project: projectFrom(flags, context), selectedAt: new Date(context.now).toISOString() };
   const collected = await collectSessions({
     sources: request.sources.join(','),
     home: context.home,
     cwd: context.cwd,
     days: request.days ?? Infinity,
+    now: context.now,
     start: request.start,
     end: request.end,
+    project: request.project,
     maxFileBytes: maxFileBytesFrom(flags),
     maxSessionsPerSource: flags['max-sessions'] === undefined ? 100_000 : maxSessionsFrom(flags),
     maxDiscoveryFiles: flags['max-discovery-files'] === undefined ? 100_000 : maxDiscoveryFilesFrom(flags)
@@ -144,13 +180,15 @@ async function prepareFromRequest(request, flags, context) {
     request,
     candidates: collected.analysisCandidates,
     analyzer: { host: request.host, model: typeof flags.model === 'string' ? flags.model.trim() : 'unknown' },
-    diagnostics: collected.diagnostics
+    diagnostics: collected.diagnostics,
+    projectFilter: collected.projectFilter
   });
   if (!context.quiet) console.log(JSON.stringify({ runId: run.id, manifestPath: run.manifestPath }, null, 2));
   return { request, runId: run.id, manifestPath: run.manifestPath };
 }
 
 async function runInsights(flags, context) {
+  projectFrom(flags, context);
   let reader;
   const ask = context.ask ?? ((question) => {
     reader ??= createInterface({ input: process.stdin, output: process.stdout });
@@ -164,8 +202,15 @@ async function runInsights(flags, context) {
   }
   request = { ...request, locale: normalizeLocale(flags.locale) };
   const prepared = await prepareFromRequest(request, flags, context);
-  if (!context.quiet) console.log(`Next: agent-insight semantic next --run ${prepared.runId} --host ${request.host} --model ${typeof flags.model === 'string' ? flags.model.trim() : 'unknown'}`);
+  if (!context.quiet) {
+    const model = typeof flags.model === 'string' ? flags.model.trim() : 'unknown';
+    console.log(`Next: agent-insight semantic next --run ${shellArgument(prepared.runId)} --host ${shellArgument(request.host)} --model ${shellArgument(model)}`);
+  }
   return prepared;
+}
+
+function shellArgument(value) {
+  return /^[A-Za-z0-9_./:=+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 function requireHostFlag(value) {
@@ -222,53 +267,68 @@ async function runSemantic(flags, context) {
   const actorHost = requireHostFlag(flags.host);
   if (typeof flags.model !== 'string' || !flags.model.trim()) throw new Error('semantic requires --model <exact-model-id-or-unknown>.');
   const actorModel = flags.model.trim();
-  const run = await getSemanticRun({ runsRoot: paths.runsRoot, runId: flags.run });
-  const expectedModel = run.analyzer?.model ?? 'unknown';
-  if (run.analyzer?.host !== actorHost || expectedModel !== actorModel) {
-    throw new Error(`Semantic run belongs to ${run.analyzer?.host}/${expectedModel}; refusing ${actorHost}/${actorModel}.`);
-  }
-  if (action === 'next') {
-    const task = await nextSemanticTask({ ...paths, runId: flags.run });
-    if (!context.quiet) console.log(JSON.stringify(task, null, 2));
-    return task;
-  }
-  if (action === 'fail') {
-    if (typeof flags.task !== 'string') throw new Error('semantic fail requires --task <task-id>.');
-    const value = await failSemanticTask({ runsRoot: paths.runsRoot, runId: flags.run, taskId: flags.task, reason: String(flags.reason ?? 'analyzer_failure') });
-    if (!context.quiet) console.log(JSON.stringify(value, null, 2));
-    return value;
-  }
-  if (action === 'ingest') {
-    if (typeof flags.task !== 'string') throw new Error('semantic ingest requires --task <task-id>.');
-    const submissionPath = await semanticSubmissionForTask({ runsRoot: paths.runsRoot, runId: flags.run, taskId: flags.task });
-    const handle = await open(submissionPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-    let result;
-    try {
-      const info = await handle.stat();
-      if (!info.isFile() || info.size > 2 * 1024 * 1024) throw new Error('Semantic submission must be a regular JSON file no larger than 2 MiB.');
-      result = JSON.parse(await handle.readFile('utf8'));
-    } finally {
-      await handle.close();
+  const value = await withSemanticRunTransaction({ ...paths, runId: flags.run }, async (transaction) => {
+    const run = await transaction.getRun();
+    const expectedModel = run.analyzer?.model ?? 'unknown';
+    if (run.analyzer?.host !== actorHost || expectedModel !== actorModel) {
+      throw new Error(`Semantic run belongs to ${run.analyzer?.host}/${expectedModel}; refusing ${actorHost}/${actorModel}.`);
     }
-    const value = await ingestSemanticResult({ ...paths, runId: flags.run, taskId: flags.task, result });
-    await unlink(submissionPath);
-    if (!context.quiet) console.log(JSON.stringify(value, null, 2));
-    return value;
-  }
-  const outputDirectory = resolve(typeof flags.output === 'string' ? flags.output : join(context.home, '.agent-insight', 'usage-data'));
-  const value = await finalizeSemanticRun({ runsRoot: paths.runsRoot, runId: flags.run, outputDirectory });
+    if (action === 'next') {
+      return transaction.next();
+    }
+    if (action === 'fail') {
+      if (typeof flags.task !== 'string') throw new Error('semantic fail requires --task <task-id>.');
+      return transaction.fail({ taskId: flags.task, reason: String(flags.reason ?? 'analyzer_failure') });
+    }
+    if (action === 'ingest') {
+      if (typeof flags.task !== 'string') throw new Error('semantic ingest requires --task <task-id>.');
+      const submissionPath = await transaction.submissionForTask({ taskId: flags.task });
+      const handle = await open(submissionPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      let result;
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.size > 2 * 1024 * 1024) throw new Error('Semantic submission must be a regular JSON file no larger than 2 MiB.');
+        result = JSON.parse(await handle.readFile('utf8'));
+      } finally {
+        await handle.close();
+      }
+      let value = await transaction.ingest({ taskId: flags.task, result });
+      try {
+        await unlink(submissionPath);
+      } catch (error) {
+        // The checkpoint already contains the accepted result. Cleanup failure
+        // must not tell the host to submit the same task again.
+        if (error.code !== 'ENOENT') {
+          value = { ...value, submissionCleanupWarning: {
+            message: 'Result accepted; the submitted JSON could not be removed.',
+            path: submissionPath,
+            code: error.code ?? 'UNKNOWN'
+          } };
+        }
+      }
+      return value;
+    }
+    const outputDirectory = resolve(typeof flags.output === 'string' ? flags.output : join(context.home, '.agent-insight', 'usage-data'));
+    return transaction.finalize({ outputDirectory });
+  });
   if (!context.quiet) {
-    console.log(`Your shareable insights report is ready:\nfile://${value.files.timestampedHtml}`);
-    const coach = buildCoachSummary(value.report);
-    if (coach) {
-      console.log(`\nThis run’s one change: ${coach.title}`);
-      if (coach.copyablePrompt) console.log(`Try saying: ${coach.copyablePrompt}`);
-      if (coach.hardTruths.length) {
-        console.log('Hard truths:');
-        for (const [index, item] of coach.hardTruths.entries()) console.log(`  ${index + 1}. ${item}`);
+    if (action !== 'finalize') console.log(JSON.stringify(value, null, 2));
+    else {
+      console.log(`Your shareable insights report is ready:\nfile://${value.files.timestampedHtml}`);
+      const coach = buildCoachSummary(value.report);
+      if (coach) {
+        console.log(`\nThis run’s one change: ${coach.title}`);
+        if (coach.copyablePrompt) console.log(`Try saying: ${coach.copyablePrompt}`);
+        if (coach.hardTruths.length) {
+          console.log('Hard truths:');
+          for (const [index, item] of coach.hardTruths.entries()) console.log(`  ${index + 1}. ${item}`);
+        }
+      }
+      console.log('\nWant to dig into any section or try the paste-ready rewrite above?');
+      for (const warning of [value.lockCleanupWarning, value.files?.lockCleanupWarning].filter(Boolean)) {
+        console.warn(`Report created; ${warning.message} (${warning.code}, ${warning.lockPath})`);
       }
     }
-    console.log('\nWant to dig into any section or try the paste-ready rewrite above?');
   }
   return value;
 }
@@ -348,6 +408,7 @@ async function runImport(flags, context) {
       turnFailures: session.turnFailures,
       inputTokens: session.inputTokens,
       outputTokens: session.outputTokens,
+      tokenUsage: session.tokenUsage,
       toolNames: session.toolNames,
       providers: session.providers,
       models: session.models,
@@ -368,7 +429,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const home = options.home ?? homedir();
   const [command = 'help', ...rest] = argv;
   const flags = parseFlags(rest);
-  const context = { cwd, home, ask: options.ask, quiet: Boolean(options.quiet) };
+  const context = { cwd, home, now: options.now ?? Date.now(), ask: options.ask, quiet: Boolean(options.quiet) };
   if (command === 'help' || command === '--help' || command === '-h') {
     console.log(PUBLIC_HELP);
     return;

@@ -8,7 +8,7 @@ import { extractAnalysisInput } from '../src/transcript.mjs';
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url);
 
-test('Claude semantic input keeps bounded dialogue and tool names but omits tool payloads', async () => {
+test('Claude semantic input keeps dialogue and tool names but omits tool payloads', async () => {
   const input = await extractAnalysisInput(fixture('claude.jsonl'), 'claude');
 
   assert.equal(input.source, 'claude');
@@ -23,10 +23,26 @@ test('Claude semantic input keeps bounded dialogue and tool names but omits tool
   assert.deepEqual(input.messages, [
     { index: 1, role: 'user', text: 'Fix the parser' },
     { index: 2, role: 'assistant', text: 'I will inspect it' },
-    { index: 3, role: 'tool', text: 'Read' },
-    { index: 4, role: 'tool', text: 'Bash' }
+    { index: 3, role: 'tool', text: 'Read', tool: { kind: 'call', name: 'Read', status: 'unknown' } },
+    { index: 4, role: 'tool', text: 'Bash', tool: { kind: 'call', name: 'Bash', status: 'unknown' } }
   ]);
   assert.equal(JSON.stringify(input.messages).includes('claude-1'), false);
+});
+
+test('semantic extraction preserves constraints and failed outcomes beyond former preview limits', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-insight-transcript-full-'));
+  const file = join(root, 'full.jsonl');
+  const userText = `${'Context. '.repeat(100)}Do not deploy; acceptance requires the regression test.`;
+  const assistantText = `${'Investigation. '.repeat(100)}The tests failed; the goal is not achieved.`;
+  await writeFile(file, [
+    { type: 'user', message: { role: 'user', content: userText } },
+    { type: 'assistant', message: { role: 'assistant', content: assistantText } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: assistantText }] } }
+  ].map(JSON.stringify).join('\n'));
+  const input = await extractAnalysisInput(file, 'claude');
+  assert.deepEqual(input.messages.map((message) => message.text), [userText, assistantText, assistantText]);
+  assert.equal(input.userMessageCount, 1);
+  await assert.rejects(extractAnalysisInput(file, 'claude', { maxRecordBytes: 256 }), /semantic record-size limit/);
 });
 
 test('semantic extraction fails closed at the configured transcript byte limit', async () => {

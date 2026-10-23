@@ -20,10 +20,7 @@ function aggregateResult(task, id) {
     what_works: { intro: 'Checks work.', impressive_workflows: [workflow('One'), workflow('Two'), workflow('Three')] },
     friction_analysis: { intro: 'Some friction.', categories: [category('Tools'), category('Context'), category('Approach')] },
     suggestions: {
-      claude_md_additions: [
-        { addition: 'Run tests.', why: 'Repeated.', prompt_scaffold: 'Add under Testing.', ...evidence },
-        { addition: 'Keep scope.', why: 'Repeated.', prompt_scaffold: 'Add under Workflow.', ...evidence }
-      ],
+      claude_md_additions: [],
       features_to_try: [
         { feature: 'Custom Skills', one_liner: 'Reuse workflows.', why_for_you: 'Checks repeat.', example_code: '/test', ...evidence },
         { feature: 'Hooks', one_liner: 'Automate checks.', why_for_you: 'Checks matter.', example_code: 'hooks', ...evidence }
@@ -45,7 +42,7 @@ function sessionAuditResult() {
     findings: [{
       category: 'acceptance_criteria',
       severity: 'high',
-      evidence_posture: 'established_pattern',
+      evidence_posture: 'observed_instance',
       accusation: 'You patch first and define done later.',
       explanation: 'The ask jumps to a fix without stating the regression gate up front.',
       quotations: ['Fix the broken parser'],
@@ -60,7 +57,7 @@ function sessionAuditResult() {
       accusation: 'Scope arrives in sequel form.',
       explanation: 'A follow-up regression request appears only after the first repair lands.',
       quotations: ['Add a regression test for the parser edge case.'],
-      locators: [{ message_indexes: [9] }],
+      locators: [{ message_indexes: [10] }],
       occurrence_count: null,
       better_alternative: 'Bundle the repair and the regression expectation in the first instruction.',
       root_cause: 'late requirement drip'
@@ -74,7 +71,7 @@ function auditAggregateResult(sessionId) {
       {
         category: 'acceptance_criteria',
         severity: 'high',
-        evidence_posture: 'established_pattern',
+        evidence_posture: 'observed_instance',
         accusation: 'You patch first and define done later.',
         explanation: 'The ask jumps to a fix without stating the regression gate up front.',
         quotations: ['Fix the broken parser'],
@@ -90,7 +87,7 @@ function auditAggregateResult(sessionId) {
         accusation: 'Scope arrives in sequel form.',
         explanation: 'A follow-up regression request appears only after the first repair lands.',
         quotations: ['Add a regression test for the parser edge case.'],
-        locators: [{ session_id: sessionId, message_indexes: [9] }],
+        locators: [{ session_id: sessionId, message_indexes: [10] }],
         occurrence_count: null,
         better_alternative: 'Bundle the repair and the regression expectation in the first instruction.',
         root_cause: 'late requirement drip'
@@ -113,29 +110,19 @@ function auditAggregateResult(sessionId) {
       habit: 'You harden the win with a regression ask.',
       explanation: 'After the first repair, you demand an edge-case test instead of declaring victory.',
       quotations: ['Add a regression test for the parser edge case.'],
-      locators: [{ session_id: sessionId, message_indexes: [9] }]
+      locators: [{ session_id: sessionId, message_indexes: [10] }]
     }],
-    self_defeating_patterns: [{
-      pattern: 'Fix it, then remember the test',
-      intent: 'implementation before acceptance criteria',
-      explanation: 'Acceptance arrives as a sequel instead of the opening line.',
-      quotations: ['Fix the broken parser'],
-      locators: [{ session_id: sessionId, message_indexes: [1] }]
-    }],
+    // One observed request cannot establish a recurring self-defeating habit.
+    self_defeating_patterns: [],
     highest_leverage_change: {
       change: 'Lead with the failing case and the green bar that proves it.',
-      rationale: 'One acceptance sentence collapses the patch-first habit without inventing a tracker.'
+      copyable_prompt: 'Fix this parser failure and add its regression test; finish after that test passes.',
+      rationale: 'One acceptance sentence collapses the patch-first habit without inventing a tracker.',
+      quotations: ['Fix the broken parser'],
+      locators: [{ session_id: sessionId, message_indexes: [1] }]
     },
-    automation_candidates: [{
-      name: 'parser-regression-gate',
-      type: 'Skill',
-      trigger: 'When asking to fix a parser failure',
-      frequency: 'Repeated repair-then-test sessions',
-      inputs: ['failing behavior', 'edge case'],
-      outputs: ['fix plus regression test'],
-      rationale: 'The repair followed by an explicit regression ask is a multi-step workflow worth packaging.',
-      over_automation_risk: 'A canned skill could skip genuine diagnosis when the failure is novel.'
-    }]
+    // This sample has no repeated multi-step workflow.
+    automation_candidates: []
   };
 }
 
@@ -197,32 +184,34 @@ test('a semantic run progresses through every section and finalizes a timestampe
   assert.equal(final.report.parity.structuralStatus, 'complete');
   assert.equal(final.report.extensions.userAudit.status, 'complete');
   assert.equal(final.report.extensions.userAudit.aggregate.topThree.length, 3);
+  // Metadata outliers must never become unvalidated claims about user intent.
+  assert.ok(final.report.efficiency.flagged.length > 0);
+  assert.deepEqual(final.report.extensions.userAudit.aggregate.remaining, []);
   assert.equal(final.report.extensions.userAudit.aggregate.strengths.length, 1);
-  assert.equal(final.report.extensions.userAudit.aggregate.selfDefeatingPatterns.length, 1);
+  assert.equal(final.report.extensions.userAudit.aggregate.selfDefeatingPatterns.length, 0);
   assert.match(final.report.extensions.userAudit.aggregate.highestLeverageChange.change, /failing case/);
-  assert.equal(final.report.extensions.userAudit.aggregate.automationCandidates[0].type, 'Skill');
+  assert.deepEqual(final.report.extensions.userAudit.aggregate.automationCandidates, []);
   assert.deepEqual(final.report.coverage.eligibility, { scanned: 1, eligible: 1, excluded: 0, reasons: {} });
-  assert.match(final.files.timestampedHtml, /report-\d{4}-\d{2}-\d{2}-\d{6}\.html$/);
+  assert.match(final.files.timestampedHtml, /report-\d{4}-\d{2}-\d{2}-\d{6}-[a-f0-9-]{36}\.html$/);
   const html = await readFile(final.files.timestampedHtml, 'utf8');
   assert.match(html, /At a Glance/);
   assert.match(html, /1 eligible/);
   assert.match(html, /The parser blinked first/);
   assert.match(html, /Fix the broken parser/);
-  assert.match(html, /Three hard truths/);
+  assert.match(html, /Priority findings/);
   assert.match(html, /All findings/);
   assert.match(html, /Habits that undercut you/);
   assert.match(html, /Habits worth keeping/);
   assert.match(html, /Automation candidates/);
   assert.match(html, /One highest-leverage change/);
   assert.match(html, /You patch first and define done later/);
-  assert.match(html, /parser-regression-gate/);
   assert.match(html, /claude-parity/);
   assert.match(html, /\/work\/parity/);
   assert.match(final.report.privacy.note, /representative user quotations/);
   assert.equal(final.report.semantic.sessions[0].sessionId, 'claude-parity');
   assert.equal(final.report.semantic.sessions[0].projectPath, '/work/parity');
-  assert.ok(html.indexOf('Three hard truths') > html.indexOf('The parser blinked first'));
-  assert.ok(html.indexOf('One highest-leverage change') < html.indexOf('Three hard truths'));
+  assert.ok(html.indexOf('<h2>Priority findings</h2>') > html.indexOf('The parser blinked first'));
+  assert.ok(html.indexOf('One highest-leverage change') < html.indexOf('<h2>Priority findings</h2>'));
   assert.ok(html.indexOf('Habits that undercut you') > html.indexOf('All findings'));
   assert.ok(html.indexOf('Automation candidates') > html.indexOf('Habits worth keeping'));
   assert.ok(html.indexOf('Evidence index') > html.indexOf('Automation candidates'));
@@ -260,8 +249,55 @@ test('audit task failure still finalizes the Claude baseline with explicit incom
   const html = await readFile(final.files.html, 'utf8');
   assert.match(html, /At a Glance/);
   assert.match(html, /The parser blinked first/);
-  assert.match(html, /Three hard truths/);
+  assert.match(html, /Priority findings/);
   assert.match(html, /User audit extension coverage is incomplete/);
   assert.match(html, /Extension coverage is partial: userAudit/);
   assert.doesNotMatch(html, /All findings/);
+});
+
+test('oversized audit aggregation reads every finding and finalizes a complete fused report', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agent-insight-audit-limit-'));
+  const { runsRoot, prepared } = await prepareCompleteRun(home);
+  const { task } = await driveBaseline(runsRoot, prepared.id);
+  const finding = sessionAuditResult().findings[0];
+  await ingestSemanticResult({ runsRoot, runId: prepared.id, taskId: task.id, result: {
+    findings: Array.from({ length: 20 }, (_, index) => ({ ...finding, explanation: 'x'.repeat(2000), root_cause: `distinct cause ${index}` }))
+  } });
+  const context = { runsRoot, runId: prepared.id };
+  const seen = new Map();
+  let next = await nextSemanticTask(context);
+  let chunks = 0;
+  while (next.kind === 'audit_aggregate_chunk') {
+    assert.ok(next.request.prompt.length <= 30_000);
+    assert.deepEqual(await nextSemanticTask(context), next);
+    const data = JSON.parse(next.request.prompt.match(/<audit-data>\n([\s\S]*?)\n<\/audit-data>/)[1]);
+    for (const session of data.sessions) for (const item of session.findings) {
+      assert.equal(item.explanation.length, 2000);
+      seen.set(item.rootCause, { ...item, explanation: `Supported observation for ${item.rootCause}.` });
+    }
+    await ingestSemanticResult({ ...context, taskId: next.id, result: { summary: 'Cumulative distinct observations, retaining their original support.', findings: [...seen.values()] } });
+    chunks += 1;
+    assert.ok(chunks < 30);
+    next = await nextSemanticTask(context);
+  }
+  assert.ok(chunks > 1);
+  assert.equal(seen.size, 20);
+  assert.equal(next.kind, 'audit_aggregate');
+  await ingestSemanticResult({ ...context, taskId: next.id, result: {
+    top_three: [], remaining: [...seen.values()], strengths: [], self_defeating_patterns: [], highest_leverage_change: null, automation_candidates: []
+  } });
+  assert.equal((await nextSemanticTask(context)).kind, 'complete');
+  const final = await finalizeSemanticRun({ runsRoot, runId: prepared.id, outputDirectory: join(home, 'usage-data') });
+  assert.equal(final.report.parity.structuralStatus, 'complete');
+  assert.equal(final.report.extensions.userAudit.status, 'complete');
+  const aggregate = final.report.extensions.userAudit.aggregate;
+  const delivered = [...aggregate.topThree, ...aggregate.remaining];
+  assert.equal(delivered.length, 20);
+  assert.deepEqual(new Set(delivered.map((item) => item.rootCause)), new Set(seen.keys()));
+  assert.ok(delivered.every((item) => item.evidenceSessionCount === 1 && item.evidenceMessageCount === 1));
+  assert.deepEqual(final.report.coverage.extensionFailures, []);
+  const html = await readFile(final.files.html, 'utf8');
+  assert.match(html, /The parser blinked first/);
+  assert.match(html, /All findings/);
+  assert.doesNotMatch(html, /User audit extension coverage is incomplete/);
 });

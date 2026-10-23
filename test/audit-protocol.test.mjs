@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  auditAggregateEvidenceContext,
   createAuditAggregateChunkRequest,
   createAuditAggregateRequest,
   createSessionAuditChunkRequest,
@@ -9,8 +10,10 @@ import {
   createSessionAuditRequest,
   splitAuditSessions,
   splitAuditUserMessages,
+  validateAuditAggregateChunkResult,
   validateAuditAggregateResult,
-  validateSessionAuditResult
+  validateSessionAuditResult,
+  validateSessionAuditChunkResult
 } from '../src/audit-protocol.mjs';
 
 const userText = 'Just fix everything and make it good somehow.';
@@ -30,7 +33,8 @@ const input = {
     { index: 4, role: 'user', text: workflowText },
     { index: 5, role: 'user', text: '继续' },
     { index: 6, role: 'user', text: '可以' },
-    { index: 7, role: 'user', text: 'ok' }
+    { index: 7, role: 'user', text: 'ok' },
+    { index: 8, role: 'user', text: workflowText }
   ]
 };
 
@@ -38,7 +42,7 @@ function validFinding(overrides = {}) {
   return {
     category: 'vague_broad_commands',
     severity: 'high',
-    evidence_posture: 'established_pattern',
+    evidence_posture: 'observed_instance',
     accusation: 'You outsource taste to vibes.',
     explanation: 'Broad commands replace concrete decisions about scope and done.',
     quotations: [userText],
@@ -74,13 +78,15 @@ function extensionFields(overrides = {}) {
       pattern: 'Just fix everything somehow',
       intent: 'vague authorization without criteria',
       explanation: 'Broad permission replaces the missing done definition.',
-      quotations: [userText],
-      locators: [{ session_id: 'session-a', message_indexes: [1] }]
+      quotations: [userText, regressionText],
+      locators: [{ session_id: 'session-a', message_indexes: [1, 3] }]
     }],
     highest_leverage_change: {
       change: 'State the acceptance check before authorizing edits.',
       rationale: 'One concrete done line collapses the vague-authorization habit.',
-      copyable_prompt: 'Before any edits: the acceptance check is <test or observable signal>; stay inside <files>; non-goals are <list>.'
+      copyable_prompt: 'Before any edits: the acceptance check is <test or observable signal>; stay inside <files>; non-goals are <list>.',
+      quotations: [userText],
+      locators: [{ session_id: 'session-a', message_indexes: [1] }]
     },
     automation_candidates: [{
       name: 'ship-checklist',
@@ -91,7 +97,9 @@ function extensionFields(overrides = {}) {
       outputs: ['docs update', 'PR body with checklist'],
       rationale: 'The migrate-docs-PR sequence repeats as one multi-step workflow.',
       over_automation_risk: 'Would hide judgment when the release path actually needs a human gate.',
-      draft_body: '# ship-checklist\n\n1. Run tests\n2. Update docs\n3. Open PR with checklist'
+      draft_body: '# ship-checklist\n\n1. Run tests\n2. Update docs\n3. Open PR with checklist',
+      quotations: [workflowText],
+      locators: [{ session_id: 'session-a', message_indexes: [4, 8] }]
     }],
     ...overrides
   };
@@ -146,12 +154,13 @@ test('session audit accepts grounded findings across the fixed taxonomy and free
   }, input);
 
   assert.equal(result.findings.length, 4);
-  assert.equal(result.findings[0].evidencePosture, 'established_pattern');
+  assert.equal(result.findings[0].evidencePosture, 'observed_instance');
   assert.equal(result.findings[0].copyablePrompt.includes('failing case'), true);
   assert.equal(result.findings[1].category, 'correction_quality');
   assert.equal(result.findings[2].category, 'convergence');
   assert.equal(result.findings[3].category, 'freeform');
-  assert.deepEqual(result.userTexts, [userText, regressionText, workflowText, '继续', '可以', 'ok']);
+  assert.equal(result.userTexts, undefined);
+  assert.deepEqual(result.userMessageIndexes, [1, 3, 4, 5, 6, 7, 8]);
 });
 
 test('session audit rejects a copyable prompt that merely repeats the quotation', () => {
@@ -193,6 +202,7 @@ test('audit aggregate collapses duplicate root causes, keeps top three, and seve
   const sessions = [{
     id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
     sessionId: 'session-a',
+    userMessages: input.messages.filter((message) => message.role === 'user'),
     userTexts: [userText, regressionText, workflowText, '继续', '可以', 'ok'],
     findings: [validFinding()]
   }, {
@@ -246,13 +256,14 @@ test('audit aggregate rejects unknown session locators', () => {
       self_defeating_patterns: [],
       automation_candidates: []
     })
-  }, { sessions: [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaa', sessionId: 'session-a', userTexts: [userText], findings: [] }] }), /unknown session/);
+  }, { sessions: [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaa', sessionId: 'session-a', userMessages: input.messages, userTexts: [userText], findings: [] }] }), /unknown session/);
 });
 
 test('audit aggregate keeps strengths, dedupes self-defeating patterns by intent, and requires one highest-leverage change', () => {
   const sessions = [{
     id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
     sessionId: 'session-a',
+    userMessages: input.messages.filter((message) => message.role === 'user'),
     userTexts: [userText, regressionText, workflowText],
     findings: [validFinding()]
   }];
@@ -266,15 +277,15 @@ test('audit aggregate keeps strengths, dedupes self-defeating patterns by intent
           pattern: 'Just fix everything somehow',
           intent: 'vague authorization without criteria',
           explanation: 'Broad permission replaces the missing done definition.',
-          quotations: [userText],
-          locators: [{ session_id: 'session-a', message_indexes: [1] }]
+          quotations: [userText, regressionText],
+          locators: [{ session_id: 'session-a', message_indexes: [1, 3] }]
         },
         {
           pattern: 'make it good somehow',
           intent: 'vague authorization without criteria',
           explanation: 'Same vague permission wearing a nicer coat.',
-          quotations: [userText],
-          locators: [{ session_id: 'session-a', message_indexes: [1] }]
+          quotations: [userText, regressionText],
+          locators: [{ session_id: 'session-a', message_indexes: [1, 3] }]
         }
       ]
     })
@@ -290,6 +301,7 @@ test('audit aggregate rejects longitudinal highest-leverage changes and drops fi
   const sessions = [{
     id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
     sessionId: 'session-a',
+    userMessages: input.messages.filter((message) => message.role === 'user'),
     userTexts: [userText, regressionText, workflowText, '继续', '可以', 'ok'],
     findings: [validFinding()]
   }];
@@ -300,6 +312,7 @@ test('audit aggregate rejects longitudinal highest-leverage changes and drops fi
     ...extensionFields({
       highest_leverage_change: {
         change: 'Build a thirty-day streak of clearer prompts.',
+        copyable_prompt: 'State the acceptance check before authorizing edits.',
         rationale: 'Tracking progress every day for weeks will supposedly fix the habit.'
       }
     })
@@ -328,7 +341,9 @@ test('audit aggregate rejects longitudinal highest-leverage changes and drops fi
           inputs: ['diff summary'],
           outputs: ['PR checklist'],
           rationale: workflowText,
-          over_automation_risk: 'May paper over release judgment.'
+          over_automation_risk: 'May paper over release judgment.',
+          quotations: [workflowText],
+          locators: [{ session_id: 'session-a', message_indexes: [4, 8] }]
         }
       ]
     })
@@ -417,4 +432,114 @@ test('oversized session and aggregate audit prompts split into bounded chunks', 
   });
   assert.ok(aggregateFromChunks.prompt.length <= 30_000);
   assert.match(aggregateFromChunks.prompt, /chunk_summaries/);
+});
+
+
+test('audit binds quotations to genuine cited messages and counts unique occurrences', () => {
+  for (const messageIndex of [2, 3]) {
+    assert.throws(() => validateSessionAuditResult({
+      findings: [validFinding({ locators: [{ message_indexes: [messageIndex] }] })]
+    }, input), /unknown message index|does not match its cited user messages/);
+  }
+  assert.throws(() => validateSessionAuditResult({
+    findings: [validFinding({ locators: [{ message_indexes: [1] }, { message_indexes: [1] }], occurrence_count: 2 })]
+  }, input), /unsupported for the provided evidence/);
+  const result = validateSessionAuditResult({
+    findings: [validFinding({ locators: [{ message_indexes: [1] }, { message_indexes: [1] }] })]
+  }, input);
+  assert.deepEqual(result.findings[0].locators, [{ sessionId: input.opaqueId, messageIndexes: [1] }]);
+  assert.deepEqual(result.userMessages.map(({ sourceMessageEligibility, ...message }) => message), input.messages.filter((message) => message.role === 'user'));
+});
+
+test('cross-session audit rejects misbound, invented and assistant message locators', () => {
+  const context = { sessions: [
+    { id: 'a', sessionId: 'session-a', userMessages: input.messages },
+    { id: 'b', sessionId: 'session-b', userMessages: [{ index: 1, role: 'user', text: 'Run tests only.' }] }
+  ] };
+  for (const [sessionId, index, error] of [
+    ['session-b', 1, /does not match its cited user messages/],
+    ['session-a', 2, /unknown message index/],
+    ['session-a', 999999, /unknown message index/]
+  ]) {
+    assert.throws(() => validateAuditAggregateResult({
+      top_three: [aggregateFinding({ locators: [{ session_id: sessionId, message_indexes: [index] }] })],
+      ...extensionFields({ strengths: [], self_defeating_patterns: [], automation_candidates: [] })
+    }, context), error);
+  }
+  const result = validateAuditAggregateResult({
+    top_three: [aggregateFinding()],
+    ...extensionFields({ strengths: [{ habit: 'Provides context', explanation: 'Context helps.', quotations: ['Run tests only.'], locators: [{ session_id: 'session-b', message_indexes: [1] }] }], self_defeating_patterns: [], automation_candidates: [] })
+  }, context);
+  assert.deepEqual(result.strengths[0].locators, [{ sessionId: 'b', messageIndexes: [1] }]);
+});
+
+test('audit long-message chunks preserve each fragment with the same original index', () => {
+  const text = 'early quote ' + 'x'.repeat(50000) + ' late quote';
+  const messages = [{ index: 7, role: 'user', text }];
+  const chunks = splitAuditUserMessages(messages);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => JSON.stringify(chunk).length <= 25000));
+  assert.equal(chunks.flat().map((message) => message.text).join(''), text);
+  const fragmentInput = { ...input, messages: chunks[0].map((message) => ({ ...message, role: 'user' })) };
+  assert.throws(() => validateSessionAuditChunkResult({ summary: 'Scoped chunk', findings: [validFinding({ quotations: ['late quote'], locators: [{ message_indexes: [7] }] })] }, fragmentInput), /fabricated quotation/);
+  const carriedInput = { ...input, messages: [{ index: 7, role: 'user', text: 'early quote' }, ...chunks.at(-1).map((message) => ({ ...message, role: 'user' }))] };
+  const result = validateSessionAuditChunkResult({ summary: 'Preserved both fragments', findings: [validFinding({ quotations: ['early quote', 'late quote'], locators: [{ message_indexes: [7] }] })] }, carriedInput);
+  assert.equal(result.findings.length, 1);
+});
+
+
+test('audit retains bounded indexed samples and cited excerpts instead of full user text', () => {
+  const messages = Array.from({ length: 20 }, (_, index) => ({ index: index + 1, role: 'user', text: `Message ${index} ` + 'x'.repeat(10000) + ` PRIVATE_TAIL_${index}` }));
+  const audit = validateSessionAuditResult({ findings: [validFinding({ quotations: ['PRIVATE_TAIL_19'], locators: [{ message_indexes: [20] }] })] }, { ...input, messages });
+  assert.equal(audit.userTexts, undefined);
+  assert.equal(audit.userMessageIndexes.length, 20);
+  assert.ok(JSON.stringify(audit).length < 5000);
+  assert.equal(JSON.stringify(audit).includes('PRIVATE_TAIL_0'), false);
+  assert.ok(audit.userMessages.some((message) => message.index === 20 && message.text === 'PRIVATE_TAIL_19'));
+  const session = { ...audit, id: input.opaqueId, sessionId: 'same-human-id' };
+  const request = createAuditAggregateRequest({ sessions: [session] });
+  const data = JSON.parse(request.prompt.match(/<audit-data>\n(.*?)\n<\/audit-data>/s)[1]);
+  assert.equal(data.sessions[0].user_texts, undefined);
+  assert.ok(data.sessions[0].user_messages.every((message) => message.session_id === input.opaqueId && Number.isInteger(message.index)));
+  assert.equal(request.prompt.includes('PRIVATE_TAIL_0'), false);
+  assert.throws(() => validateAuditAggregateResult({ top_three: [aggregateFinding({ quotations: ['PRIVATE_TAIL_0'], locators: [{ session_id: input.opaqueId, message_indexes: [1] }] })], ...extensionFields({ strengths: [], self_defeating_patterns: [] }) }, { sessions: [session] }), /fabricated quotation/);
+  const noFinding = validateSessionAuditResult({ findings: [] }, { ...input, messages });
+  const context = { sessions: [{ ...noFinding, id: input.opaqueId }] };
+  assert.throws(() => validateAuditAggregateResult({ top_three: [], ...extensionFields({ strengths: [{ habit: 'Helpful guidance', explanation: 'A bare index is not supporting evidence.', locators: [{ session_id: input.opaqueId, message_indexes: [20] }] }], self_defeating_patterns: [], highest_leverage_change: null, automation_candidates: [] }) }, context), /quotations is required/);
+});
+
+test('ambiguous source session aliases are rejected while canonical ids remain usable', () => {
+  const context = { sessions: [
+    { id: 'a', sessionId: 'shared', source: 'codex', userMessages: input.messages },
+    { id: 'b', sessionId: 'shared', source: 'claude', userMessages: input.messages },
+    { id: 'c', sessionId: 'a', source: 'cursor', userMessages: input.messages }
+  ] };
+  const value = (id) => ({ top_three: [aggregateFinding({ locators: [{ session_id: id, message_indexes: [1] }] })], ...extensionFields({ strengths: [], self_defeating_patterns: [], highest_leverage_change: { ...extensionFields().highest_leverage_change, locators: [{ session_id: id, message_indexes: [1] }] }, automation_candidates: [] }) });
+  assert.throws(() => validateAuditAggregateResult(value('shared'), context), /ambiguous session alias/);
+  assert.equal(validateAuditAggregateResult(value('a'), context).topThree[0].locators[0].sessionId, 'a');
+  assert.equal(validateAuditAggregateResult(value('b'), context).topThree[0].locators[0].sessionId, 'b');
+});
+
+test('rolling audit aggregation cannot reopen uncarried prior-session quotations', () => {
+  const sessions = [{ id: 'a', userMessages: [{ index: 1, role: 'user', text: userText }, { index: 2, role: 'user', text: 'hidden previous sample' }] }, { id: 'b', userMessages: [{ index: 1, role: 'user', text: 'current sample' }] }];
+  const carry = { summary: 'Prior claim', findings: [{ quotations: [userText], locators: [{ sessionId: 'a', messageIndexes: [1] }] }] };
+  for (const current of [[], [sessions[1]]]) {
+    const context = auditAggregateEvidenceContext({ sessions }, current, carry);
+    assert.throws(() => validateAuditAggregateChunkResult({ summary: 'Hidden claim', findings: [aggregateFinding({ quotations: ['hidden previous sample'], locators: [{ session_id: 'a', message_indexes: [2] }] })] }, context), /fabricated quotation/);
+    const accepted = validateAuditAggregateChunkResult({ summary: 'Retained claim', findings: [aggregateFinding({ locators: [{ session_id: 'a', message_indexes: [1] }] })] }, context);
+    assert.equal(accepted.findings.length, 1);
+  }
+});
+
+test('a single oversized audit session exposes every validated finding without creating extra sessions', () => {
+  const audit = validateSessionAuditResult({ findings: Array.from({ length: 10 }, (_, index) => validFinding({ explanation: 'x'.repeat(2000), root_cause: `cause ${index}` })) }, input);
+  const session = { ...audit, id: input.opaqueId };
+  const groups = splitAuditSessions([session]);
+  assert.ok(groups.length > 1);
+  assert.deepEqual(groups.flatMap((group) => group.flatMap((fragment) => fragment.findings)), audit.findings);
+  assert.deepEqual([...new Set(groups.flat().map((fragment) => fragment.id))], [input.opaqueId]);
+  for (const [index, group] of groups.entries()) {
+    const request = createAuditAggregateChunkRequest({ sessions: [session] }, group, index, groups.length);
+    assert.ok(request.prompt.length <= 30_000);
+  }
 });

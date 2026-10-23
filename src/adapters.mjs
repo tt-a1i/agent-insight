@@ -1,7 +1,7 @@
 import { access, readdir, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
-import { extname, join, resolve } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseSessionFile } from './parse.mjs';
 import { collectOpenCodeSessions } from './opencode.mjs';
 import { authorshipCoverageNote } from './authorship.mjs';
@@ -70,7 +70,7 @@ function timeBounds({ days, now, start, end }) {
       latest: end ? Date.parse(`${end}T23:59:59.999Z`) : Infinity
     };
   }
-  return { earliest: days === Infinity ? -Infinity : now - days * 86_400_000, latest: Infinity };
+  return { earliest: days === Infinity ? -Infinity : now - days * 86_400_000, latest: now };
 }
 
 async function selectFilesForWindow(files, { days, now, start, end, maxSessions }) {
@@ -214,15 +214,21 @@ async function parseFiles(files, source, limits) {
   return { sessions, failures };
 }
 
-function sessionMatchesProject(session, project) {
-  if (!project) return true;
-  if (!session.project) return false;
-  const normalizedProject = resolve(project);
-  const normalizedSession = resolve(session.project);
-  return normalizedSession === normalizedProject || normalizedSession.startsWith(`${normalizedProject}/`);
+function sessionProjectPaths(session) {
+  const paths = Array.isArray(session.projectPaths) ? session.projectPaths : [session.project ?? session.projectPath];
+  return [...new Set(paths.filter((path) => typeof path === 'string' && path.trim()).map((path) => path.trim()))];
 }
 
-function sessionIsWithinWindow(session, { days, now, start, end }) {
+export function sessionMatchesProject(session, project, cwd = process.cwd()) {
+  if (!project) return true;
+  const paths = sessionProjectPaths(session);
+  return paths.length > 0 && paths.every((path) => {
+    const child = relative(resolve(cwd, project), resolve(cwd, path));
+    return child === '' || (!isAbsolute(child) && child !== '..' && !child.startsWith('../') && !child.startsWith('..\\'));
+  });
+}
+
+export function sessionIsWithinWindow(session, { days, now, start, end }) {
   const { earliest, latest } = timeBounds({ days, now, start, end });
   const timestamp = Date.parse(session.endedAt ?? session.startedAt);
   return Number.isFinite(timestamp) && timestamp >= earliest && timestamp <= latest;
@@ -230,6 +236,9 @@ function sessionIsWithinWindow(session, { days, now, start, end }) {
 
 function mergeSession(current, incoming) {
   const merged = { ...current, toolNames: { ...current.toolNames }, providers: { ...current.providers }, models: { ...current.models } };
+  // Per-file coverage cannot describe merged journals. Keep compatible scalar
+  // subtotals, but leave measured token coverage unknown until it can be merged.
+  delete merged.tokenUsage;
   for (const field of ['userMessages', 'assistantMessages', 'toolCalls', 'toolErrors', 'turnFailures', 'inputTokens', 'outputTokens', 'recordsRead']) {
     merged[field] = (current[field] ?? 0) + (incoming[field] ?? 0);
   }
@@ -239,13 +248,18 @@ function mergeSession(current, incoming) {
   merged.startedAt = !current.startedAt || (incoming.startedAt && incoming.startedAt < current.startedAt) ? incoming.startedAt : current.startedAt;
   merged.endedAt = !current.endedAt || (incoming.endedAt && incoming.endedAt > current.endedAt) ? incoming.endedAt : current.endedAt;
   merged.project ??= incoming.project;
+  merged.projectPaths = [...new Set([...sessionProjectPaths(current), ...sessionProjectPaths(incoming)])];
   merged.partial ||= incoming.partial;
   merged.partialReason ??= incoming.partialReason;
   merged.hasBranches ||= incoming.hasBranches;
+  // The merged metadata describes several files. A locator for only one file
+  // would falsely claim that semantic analysis covered the entire session.
+  Object.defineProperty(merged, 'semanticExclusionReason', { value: 'merged_subagent_transcripts', enumerable: false });
   return merged;
 }
 
 function chooseRicherSession(current, incoming) {
+  if (Boolean(current.partial) !== Boolean(incoming.partial)) return current.partial ? incoming : current;
   const currentScore = (current.recordsRead ?? 0) * 10 + (current.assistantMessages ?? 0) + (current.toolCalls ?? 0);
   const incomingScore = (incoming.recordsRead ?? 0) * 10 + (incoming.assistantMessages ?? 0) + (incoming.toolCalls ?? 0);
   if (incomingScore !== currentScore) return incomingScore > currentScore ? incoming : current;
@@ -261,6 +275,7 @@ function sessionDurationMinutes(session) {
 }
 
 function chooseClaudeSession(current, incoming) {
+  if (Boolean(current.partial) !== Boolean(incoming.partial)) return current.partial ? incoming : current;
   if (incoming.userMessages !== current.userMessages) {
     return incoming.userMessages > current.userMessages ? incoming : current;
   }
@@ -288,6 +303,8 @@ export async function collectSessions({
   openCodeRunner,
   now = Date.now()
 } = {}) {
+  const collectionCwd = resolve(cwd ?? process.cwd());
+  const normalizedProject = project ? resolve(collectionCwd, project) : null;
   const config = sourceConfigurations({ home, cwd, env });
   const selected = resolveSources(sources);
   const diagnostics = [];
@@ -295,6 +312,9 @@ export async function collectSessions({
   for (const source of selected) {
     if (source === 'opencode') {
       const result = await collectOpenCodeSessions({ cwd, env: env ?? process.env, maxSessions: Math.min(maxOpenCodeSessions, maxSessionsPerSource), ...(openCodeRunner ? { runner: openCodeRunner } : {}) });
+      if (result.diagnostic.coverage === 'partial_root_sessions') {
+        result.diagnostic.warning += ' Candidate session limits apply before session date and project filtering; matching sessions may remain unread.';
+      }
       allSessions.push(...result.sessions);
       diagnostics.push(result.diagnostic);
       continue;
@@ -326,6 +346,9 @@ export async function collectSessions({
     const sessionsWithinWindow = sessions.filter((session) => sessionIsWithinWindow(session, { days, now, start, end }));
     allSessions.push(...sessions);
     const authorshipNote = authorshipCoverageNote(source);
+    const selectionNote = selectedFiles.filesLimited || discoveryTruncated
+      ? 'Candidate file limits apply before session date and project filtering; matching sessions may remain unread. Selection uses filesystem modification time, not session date.'
+      : null;
     diagnostics.push({
       source,
       label: adapter.label,
@@ -343,7 +366,7 @@ export async function collectSessions({
       filesSkipped: failures.parse + failures.tooLarge,
       filesPartial: failures.partial,
       filesTooLarge: failures.tooLarge,
-      warning: authorshipNote || undefined,
+      warning: [authorshipNote, selectionNote].filter(Boolean).join('; ') || undefined,
       coverage: readableRoots.length === 0
         ? 'not_found'
         : (failures.parse || failures.partial || failures.tooLarge || selectedFiles.filesLimited || discoveryTruncated || discoveryErrors || selectedFiles.statErrors)
@@ -356,28 +379,83 @@ export async function collectSessions({
     const source = selected.length === 1 ? selected[0] : 'generic';
     const { sessions, failures } = await parseFiles([resolve(input)], source, { maxBytes: maxFileBytes, maxRecords, maxRecordBytes });
     allSessions.push(...sessions);
-    diagnostics.push({ source, label: 'Explicit import', mode: 'explicit file', rootsFound: 1, filesFound: 1, filesSkipped: failures.parse + failures.tooLarge, filesPartial: failures.partial, filesTooLarge: failures.tooLarge, coverage: (failures.parse || failures.tooLarge || failures.partial) ? 'partial' : 'available' });
+    diagnostics.push({ source, label: 'Explicit import', mode: 'explicit file', rootsFound: 1, filesFound: 1, filesSelected: 1, filesSkipped: failures.parse + failures.tooLarge, filesPartial: failures.partial, filesTooLarge: failures.tooLarge, coverage: (failures.parse || failures.tooLarge || failures.partial) ? 'partial' : 'available' });
   }
 
   const unique = new Map();
+  const projectsByGroup = new Map();
+  const seenFiles = new Set();
+  const duplicateGroups = new Set();
   for (const session of allSessions) {
+    const file = session.analysisLocator?.kind === 'file' ? `${session.source}:${resolve(session.analysisLocator.path)}` : null;
+    // Discovery and --input can refer to the same physical path. That is not a
+    // second journal to merge, or another identity/provenance conflict.
+    if (file && seenFiles.has(file)) continue;
+    if (file) seenFiles.add(file);
     const key = `${session.source}:${session.id}`;
-    if (!unique.has(key)) unique.set(key, session);
-    else if (session.source === 'claude' && includeSubagents) unique.set(key, mergeSession(unique.get(key), session));
-    else if (session.source === 'claude') unique.set(key, chooseClaudeSession(unique.get(key), session));
-    // Cursor may persist incremental copies of one conversation in more than
-    // one project store; active/archive Codex duplicates have the same issue.
-    else unique.set(key, chooseRicherSession(unique.get(key), session));
+    const current = unique.get(key);
+    if (!current) {
+      unique.set(key, session);
+      projectsByGroup.set(key, sessionProjectPaths(session));
+      continue;
+    }
+    duplicateGroups.add(key);
+    // Scope belongs to the whole source/native identity, not just whichever
+    // physical copy wins the semantic representative comparison.
+    projectsByGroup.set(key, [...new Set([...projectsByGroup.get(key), ...sessionProjectPaths(session)])]);
+    let preferred;
+    if (session.source === 'claude' && includeSubagents) preferred = mergeSession(current, session);
+    else {
+      // Use each physical copy's own provenance here. Group-unioned paths must
+      // never make an unknown-project transcript appear to prove scope.
+      const currentScoped = !current.partial && sessionMatchesProject(current, normalizedProject, collectionCwd);
+      const incomingScoped = !session.partial && sessionMatchesProject(session, normalizedProject, collectionCwd);
+      preferred = normalizedProject && currentScoped !== incomingScoped
+        ? currentScoped ? current : session
+        : session.source === 'claude' ? chooseClaudeSession(current, session) : chooseRicherSession(current, session);
+    }
+    unique.set(key, preferred);
   }
   const deduplicated = [...unique.values()];
-  const unknownProjectExcluded = project ? deduplicated.filter((session) => !session.project).length : 0;
-  const filtered = deduplicated.filter((session) => sessionMatchesProject(session, project) && sessionIsWithinWindow(session, { days, now, start, end }));
+  for (const [key, session] of unique) session.projectPaths = projectsByGroup.get(key);
+  const projectConflicts = deduplicated.filter((session) => duplicateGroups.has(`${session.source}:${session.id}`)
+    && new Set(sessionProjectPaths(session).map((path) => resolve(collectionCwd, path))).size > 1);
+  const unknownProjectExcluded = normalizedProject ? deduplicated.filter((session) => !sessionProjectPaths(session).length).length : 0;
+  const mixedProjects = normalizedProject ? deduplicated.filter((session) => {
+    const matches = sessionProjectPaths(session).map((path) => sessionMatchesProject({ project: path }, normalizedProject, collectionCwd));
+    return matches.some(Boolean) && matches.some((match) => !match);
+  }) : [];
+  const filtered = deduplicated.filter((session) => sessionMatchesProject(session, normalizedProject, collectionCwd) && sessionIsWithinWindow(session, { days, now, start, end }));
+  const diagnosedSources = new Set();
+  for (const diagnostic of diagnostics) {
+    // Group-level exclusions/conflicts are counted once per source, even when
+    // explicit input files produced additional per-file diagnostic rows.
+    if (diagnosedSources.has(diagnostic.source)) continue;
+    diagnosedSources.add(diagnostic.source);
+    const conflicts = projectConflicts.filter((session) => session.source === diagnostic.source).length;
+    if (conflicts) {
+      diagnostic.duplicateProjectConflicts = conflicts;
+      diagnostic.coverage = 'partial';
+      diagnostic.warning = [diagnostic.warning, `${conflicts} duplicate session group(s) have multiple known project paths; all observed project provenance is retained for scope checks.`].filter(Boolean).join('; ');
+    }
+    const mixed = mixedProjects.filter((session) => session.source === diagnostic.source).length;
+    if (mixed) {
+      diagnostic.mixedProjectExcluded = mixed;
+      diagnostic.coverage = 'partial';
+      diagnostic.warning = [diagnostic.warning, `${mixed} mixed-project session(s) excluded because their metadata crosses the requested project scope.`].filter(Boolean).join('; ');
+    }
+    const excluded = filtered.filter((session) => session.source === diagnostic.source && session.semanticExclusionReason).length;
+    if (!excluded) continue;
+    diagnostic.semanticExcluded = excluded;
+    diagnostic.coverage = 'partial';
+    diagnostic.warning = [diagnostic.warning, `${excluded} merged session(s) excluded from semantic analysis: merged subagent transcripts have no complete semantic projection.`].filter(Boolean).join('; ');
+  }
   return {
     sessions: filtered,
     analysisCandidates: filtered.flatMap((session) => session.analysisLocator && !session.partial ? [{ source: session.source, locator: session.analysisLocator }] : []),
     diagnostics,
     sources: selected,
-    projectFilter: project ? { requested: true, unknownProjectExcluded } : { requested: false, unknownProjectExcluded: 0 }
+    projectFilter: normalizedProject ? { requested: true, path: normalizedProject, unknownProjectExcluded, mixedProjectExcluded: mixedProjects.length } : { requested: false, unknownProjectExcluded: 0, mixedProjectExcluded: 0 }
   };
 }
 

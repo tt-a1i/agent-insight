@@ -75,7 +75,45 @@ function multiClauding(sessions) {
   };
 }
 
-function buildInsightsAggregate(sessions, semantic, sourcesScanned) {
+function summarizeTokenUsage(sessions) {
+  const buckets = ['input', 'output', 'cacheRead', 'cacheWrite'];
+  const summary = {
+    coverage: 'unavailable',
+    sessions: { total: sessions.length, complete: 0, partial: 0, unavailable: 0 },
+    scopes: {},
+    records: { expected: 0, withUsage: 0 },
+    ...Object.fromEntries(buckets.map((bucket) => [bucket, { observed: 0, reportedRecords: 0, missingRecords: 0, untrackedSessions: 0, partialSessions: 0 }])),
+    totalTokens: null
+  };
+  for (const session of sessions) {
+    const usage = session.tokenUsage;
+    const tracked = usage && buckets.every((bucket) => usage[bucket]) && usage.records;
+    const scope = tracked && ['active_branch', 'selected_transcript'].includes(usage.scope) ? usage.scope : 'unknown';
+    increment(summary.scopes, scope);
+    if (!tracked) {
+      summary.sessions.unavailable += 1;
+      for (const bucket of buckets) summary[bucket].untrackedSessions += 1;
+      continue;
+    }
+    summary.records.expected += usage.records.expected;
+    summary.records.withUsage += usage.records.withUsage;
+    const complete = !session.partial && usage.records.expected > 0 && buckets.every((bucket) => usage[bucket].missingRecords === 0);
+    const anyReported = buckets.some((bucket) => usage[bucket].reportedRecords > 0);
+    summary.sessions[complete ? 'complete' : anyReported ? 'partial' : 'unavailable'] += 1;
+    for (const bucket of buckets) {
+      for (const key of ['observed', 'reportedRecords', 'missingRecords']) summary[bucket][key] += usage[bucket][key];
+      if (usage.records.expected === 0) summary[bucket].untrackedSessions += 1;
+      if (session.partial) summary[bucket].partialSessions += 1;
+    }
+  }
+  const complete = sessions.length > 0 && summary.sessions.complete === sessions.length;
+  const anyReported = buckets.some((bucket) => summary[bucket].reportedRecords > 0);
+  summary.coverage = complete ? 'complete' : anyReported ? 'partial' : 'unavailable';
+  summary.totalTokens = complete ? buckets.reduce((total, bucket) => total + summary[bucket].observed, 0) : null;
+  return summary;
+}
+
+function buildInsightsAggregate(sessions, semantic, sourcesScanned, tokenUsageCoverage) {
   const toolCounts = {};
   const languages = {};
   const projects = {};
@@ -139,7 +177,7 @@ function buildInsightsAggregate(sessions, semantic, sourcesScanned) {
   const days = new Set(sessions.map((session) => dateOnly(session.startedAt)).filter(Boolean));
   const userMessages = sessions.reduce((sum, session) => sum + session.userMessages, 0);
   const response = responseStats(responseTimes);
-  const filesScanned = sourcesScanned.reduce((sum, source) => sum + (source.filesFound ?? 0), 0);
+  const filesScanned = sourcesScanned.reduce((sum, source) => sum + (source.filesSelected ?? 0), 0);
   return {
     totalSessions: sessions.length,
     totalSessionsScanned: Math.max(sessions.length, filesScanned),
@@ -149,6 +187,7 @@ function buildInsightsAggregate(sessions, semantic, sourcesScanned) {
     totalDurationHours: rounded(durationMinutes / 60),
     totalInputTokens: sessions.reduce((sum, session) => sum + (session.inputTokens ?? 0), 0),
     totalOutputTokens: sessions.reduce((sum, session) => sum + (session.outputTokens ?? 0), 0),
+    tokenUsageCoverage,
     toolCounts,
     languages,
     gitCommits: totals.gitCommits,
@@ -213,7 +252,7 @@ function buildObservations(totals, sourceCount, projects, sessions) {
   if (totals.branchedSessions > 0) {
     observations.push({
       title: 'Branching history is included',
-      detail: `${number(totals.branchedSessions)} session files contain multiple branches. Their counts describe stored history, not necessarily only the active conversation path.`
+      detail: `${number(totals.branchedSessions)} session files contain multiple branches. Pi counts follow the active conversation path; other sources retain their adapter's selected transcript scope. These counts are not account-wide billing totals.`
     });
   }
   if (observations.length === 0) {
@@ -253,7 +292,7 @@ function buildRecommendations(totals, projects, sourceCount) {
   return recommendations.slice(0, 3);
 }
 
-export function summarizeSessions(sessions, { days = 30, requestedRange = null, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 }, semantic = null, extensions = null, eligibility = null, locale = null } = {}) {
+export function summarizeSessions(sessions, { days = 30, requestedRange = null, selectedAt = null, sourcesScanned = [], projectFilter = { requested: false, unknownProjectExcluded: 0 }, semantic = null, extensions = null, eligibility = null, locale = null } = {}) {
   const ordered = [...sessions].sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
   const sourceMap = {};
   const projects = {};
@@ -302,6 +341,7 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
     .filter(([, value]) => value?.status === 'incomplete' || value?.failure)
     .map(([name, value]) => ({ extension: name, reason: value.failure?.reason ?? value.reason ?? 'incomplete' }));
   const dataStatus = incompleteSources.length > 0 || changedDuringRun > 0 || semanticFailures.length > 0 || extensionFailures.length > 0 ? 'partial' : 'complete';
+  const tokenUsage = summarizeTokenUsage(ordered);
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
@@ -338,8 +378,10 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
     coverage: {
       requestedDays: days === Infinity ? 'all available' : days,
       requestedRange,
+      selectedAt: typeof selectedAt === 'string' && Number.isFinite(Date.parse(selectedAt)) ? new Date(selectedAt).toISOString() : null,
       sourcesScanned,
       projectFilter,
+      tokenUsage,
       eligibility,
       semanticFailures,
       sectionFailures: semantic?.sectionFailures ?? {},
@@ -352,7 +394,7 @@ export function summarizeSessions(sessions, { days = 30, requestedRange = null, 
     topTools: sortEntries(tools),
     providers: sortEntries(providers),
     models: sortEntries(models),
-    insights: buildInsightsAggregate(ordered, semantic, sourcesScanned),
+    insights: buildInsightsAggregate(ordered, semantic, sourcesScanned, tokenUsage),
     semantic: {
       enabled: Boolean(semantic),
       analyzer: semantic?.analyzer ?? null,

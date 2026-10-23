@@ -74,6 +74,18 @@ It asks every time and does not persist either choice. It does not show a
 cost, token, or duration estimate. Explicit CLI flags may answer the prompts,
 but must resolve to the same public run-request contract.
 
+Value-taking CLI flags reject missing or blank values before source discovery
+or output writes. Boolean flags accept bare activation or explicit true/false;
+false does not authorize replacement or enable all-history selection. Unknown
+flags are rejected, and inline values preserve characters after the first `=`.
+Omitting the model on legacy prepare/insights calls retains the unknown fallback;
+an explicitly missing or blank model value is an error.
+
+The Pi command shows the prepared run ID, pending-analysis state and resume
+command before handoff. It delivers the analysis as a follow-up when Pi is busy,
+preserving the current turn. Preparation and queuing are separate from completed
+semantic analysis and report publication.
+
 Semantic execution belongs to the invoking host and the user's configured
 provider:
 
@@ -219,6 +231,45 @@ transcript_mtime
 - Write adds the number of newline characters in `content`, plus one.
 - A user interruption is text containing `[Request interrupted by user`.
 
+**[extension]** Agent Insight additionally tracks field-presence coverage for
+input, output, cache-read, and cache-write usage. Numeric legacy counters remain
+observed subtotals; absent usage is unknown, not a measured zero. The report's
+`coverage.tokenUsage` and aggregate model's `tokenUsageCoverage` retain these
+limits independently of transcript discovery coverage. A complete total requires
+all four buckets across every selected, untruncated session. Old imports and
+merged subagent metadata without presence information cannot establish a total.
+Pi native `input`, `output`, `cacheRead`, and `cacheWrite` are disjoint buckets on
+the active branch; `reasoning` and `cacheWrite1h` are subsets and are not added
+again. This scope does not represent all stored branches or account billing.
+
+**[extension]** `totalSessionsScanned` uses selected files, not every discovered
+candidate. Explicit project filters apply consistently to report and semantic
+runs, resolve relative paths from the invoking directory, include descendants,
+and exclude unknown-project records. The normalized filter survives checkpoints
+and finalization. All known project paths in a session must be within the scope;
+sessions crossing that boundary are excluded with a visible count, and semantic
+preparation checks the current source again before exposing analysis tasks.
+File caps precede filtering and retain partial-coverage notes;
+they do not silently imply exhaustive coverage of a selected project.
+
+Duplicate source/native session identities retain one representative, preferring
+a complete readable copy, while incomplete-copy coverage and all known project
+paths remain visible. Conflicting project metadata is diagnosed and participates
+in scope exclusion. Scoped selection prefers a complete copy whose own metadata
+proves that project scope, rather than attributing another copy's paths to it.
+Different sources never share a canonical identity merely
+because their native IDs match.
+
+Time selection uses the session's last recorded timestamp and includes the whole
+session. Rolling windows and all-history selection end at the frozen collection
+time; custom dates use inclusive UTC calendar days. New CLI runs retain that
+time as `request.selectedAt` and `coverage.selectedAt`, independently of report
+generation time. Legacy missing anchors remain unknown. Semantic preparation
+rechecks both current parse completeness and the known time scope before
+exposing a task; newly incomplete or out-of-scope sources produce explicit
+partial coverage. A file exactly at its record limit is complete when no extra
+nonempty record exists, with or without a final newline.
+
 Recognized language extensions are:
 
 | Extensions | Label |
@@ -268,6 +319,37 @@ the average of the two middle values.
 - every user text truncated to 500 characters;
 - every assistant text truncated to 300 characters;
 - tool names only, without tool input or tool result content.
+
+**[Transparent exceed]** Agent Insight preserves complete dialogue text in
+bounded chunks, including original internal whitespace and late constraints.
+New aggregate plans also partition oversized derived session data, metrics,
+and completed sections using their serialized envelope size. Session identity
+is preserved across fragments, and baseline aggregation retains every validated
+facet evidence item. Audit aggregation partitions complete records and exposed
+excerpts, preserves assessment context, and budgets each batch together with
+the prior synthesis. Frozen boundaries and original quote/message identities
+remain stable across continuation and ingestion. Fragment counts do not measure
+session counts or repeated behavior. An indivisible input or carry that still
+exceeds the prompt limit is reported as unavailable with its stored analysis
+retained, rather than silently shortened.
+Its baseline projection distinguishes tool calls from results and may include
+the tool name, call identifier, and explicit structured execution status.
+It does not include tool arguments or output bodies. A missing reliable status
+remains `unknown`; a successful tool execution is not proof of task completion
+or user acceptance. User-audit input continues to exclude tool records entirely.
+Native Pi sessions use the active parent-linked branch; OpenCode synthetic and
+ignored text parts do not become user-authored audit evidence.
+Pi and OpenCode assistant failures and cancellations with no text are retained
+as separate `agent_event` status records, without error bodies. Tool and agent
+events can ground a described observation but cannot become dialogue quotations.
+
+Authorship filtering uses source metadata and recognized boundary envelopes.
+Natural-language mentions of instruction files, quoted examples, and code
+whitespace are preserved. Text-only wrappers remain an authorship heuristic,
+not proof that a human could not have written an identical wrapper.
+Only a leading standalone transport timestamp in a Cursor user message can
+supply a missing clock; quoted timestamps and assistant examples cannot change
+the analysis time window. Explicit JSON timestamps always take precedence.
 
 If this projection exceeds 30,000 characters, Claude slices it into 25,000
 character chunks. Each chunk is summarized in parallel in at most 500 output
@@ -443,7 +525,7 @@ semantic envelope is not the chart contract.
 
 ### `project_areas`
 
-**[1:1]** four or five items:
+**[Transparent exceed]** Claude requests four or five items; Agent Insight returns zero to five evidence-supported areas, preserving the same object shape:
 
 ```json
 {
@@ -467,7 +549,7 @@ the user interrupts or lets Claude run, and includes concrete examples.
 
 ### `what_works`
 
-**[1:1]** exactly three requested workflows:
+**[Transparent exceed]** Claude requests exactly three workflows; Agent Insight accepts zero to three evidence-supported workflows:
 
 ```json
 {
@@ -480,7 +562,7 @@ the user interrupts or lets Claude run, and includes concrete examples.
 
 ### `friction_analysis`
 
-**[1:1]** three requested categories with two requested examples each:
+**[Transparent exceed]** Claude requests three categories with two examples each; Agent Insight accepts zero to three observed categories with one or two evidenced examples each. A smooth session may return `categories: []`; `intro` distinguishes no observed friction from insufficient evidence:
 
 ```json
 {
@@ -525,13 +607,13 @@ the user interrupts or lets Claude run, and includes concrete examples.
 }
 ```
 
-Claude asks for two or three items per category. Durable instructions repeated
+Claude asks for two or three items per category. **[Transparent exceed]** Agent Insight accepts zero to three items per category; a single-session sample cannot establish repeated guidance and must leave `claude_md_additions` empty. Durable instructions repeated
 across sessions take priority for CLAUDE.md additions. The fixed feature
 reference is MCP Servers, Custom Skills, Hooks, Headless Mode, and Task Agents.
 
 ### `on_the_horizon`
 
-**[1:1]** three requested opportunities:
+**[Transparent exceed]** Claude requests three opportunities; Agent Insight accepts zero to three justified opportunities and states evidence limits in `intro`:
 
 ```json
 {
@@ -573,11 +655,58 @@ Each field is requested as two or three sentences. `whats_hindering` separates
 Claude-side misunderstandings, wrong approaches, and bugs from user-side
 context or environment friction.
 
+**[Transparent exceed]** numerical quotas never justify invented strengths, problems, examples, or recommendations. Empty arrays retain the section schema; required prose states no observation or insufficient evidence explicitly. Single-session observations do not establish recurring habits. Durable instruction additions require evidence from at least two distinct sessions. Canonical session IDs take precedence over source aliases, and ambiguous aliases are rejected. At a Glance may state that no improvement is justified; the final host summary presents up to three supported hard truths and may have no change to recommend.
+
 **[Transparent exceed]** every aggregate claim carries source agent, date,
 and concrete session locators. Representative user quotations and project paths
-may appear when grounded in validated evidence. A finding is a recurring pattern
-only with at least two supporting sessions; one-session findings are labelled
-examples.
+may appear when grounded in validated evidence. A repeated observation requires
+at least two distinct quoted user messages; a cross-session habit requires
+support from at least two distinct sessions. A single direct observation uses
+`observed_instance`; uncertain interpretations use `bold_inference`. Every cited
+message must match a supplied quotation. Message/session coverage counts are
+computed from canonical, deduplicated locators and do not establish real-world
+event frequency or the correctness of an interpretation. Severity determines
+priority independently of citation volume.
+
+The user audit retains role-labeled assistant dialogue and sanitized tool/agent
+execution status as context in direct and chunked requests. Only genuine user
+messages may be quoted as user evidence. Derived baseline outcome/friction
+assessments are identified as derived, and do not themselves prove causality.
+Short summaries and the final host handoff preserve evidence posture,
+explanations, quotations and locators. Missing or incomplete audits do not
+promote arbitrary At a Glance prose into a prescribed action.
+
+Session audits also retain optional `assessmentContext`: a bounded derived
+summary of counterevidence, resolved misunderstandings, justified changes and
+reasons for absent or withdrawn findings. It survives direct/chunked session
+analysis and rolling aggregation independently of findings and strengths. An
+older chunk's cumulative summary can supply this derived context; an explicit
+`unknown` is never promoted to `assessed`. Missing direct-session context stays
+unknown. Assessed means that a summary was supplied, not complete coverage or
+independent confirmation. This channel cannot authorize new user quotations or
+message locators. Identical summary text is serialized only once per carry.
+
+Optional `workflowEvidence` retains bounded neutral observations independently
+of findings and strengths. Each record contains a description, task boundary,
+and verified user quotations with original locators. It follows both session
+chunks and rolling aggregation, including requests beyond representative early
+message samples. Missing records mean unknown retention, not proof that no
+workflow occurred. A record establishes a request, not execution or frequency.
+Automation candidates require separate requests or episodes; corrections and
+restatements of one task, and quoted examples, do not establish repetition.
+Generated drafts must preserve the source scope and approval boundaries.
+
+Root-cause and intent deduplication combines verified support from compatible
+model-grouped items, deduplicates canonical session/message pairs, and recomputes
+evidence coverage. It retains the selected representative's severity and
+evidence posture. More references alone neither raise priority nor establish a
+pattern; provenance validation cannot decide semantic compatibility.
+
+Effective corrections are strengths; `correction_quality` findings require an
+observed defect. Each title and recommendation must independently respect the
+available evidence—qualifications in an explanation cannot repair a stronger
+headline. When present, the final assessment summary appears as analysis context
+in HTML, Markdown and the narrative handoff, separate from source quotations.
 
 ## 7. HTML report contract
 
@@ -683,6 +812,24 @@ coverage context, and explicit no-data versus unavailable versus partial
 states. Agent Insight uses the user's selected timezone and records it in the
 report.
 
+**[Transparent exceed]** HTML and Markdown citations navigate to retained
+session evidence within the report. Baseline session references do not imply
+that every retained message supports that particular conclusion. Exact audit
+locators link only to matching retained evidence; otherwise their original
+message indexes stay visible. Canonical identities take precedence over native
+aliases, and ambiguous or missing aliases do not choose an arbitrary source.
+Sessions without retained message evidence have an explicit empty state.
+Structured descriptions with no quotation remain descriptions. These links
+make the evidence inspectable without asserting that interpretation or causal
+attribution has been independently verified.
+
+Failed semantic sections retain a named unavailable placeholder in HTML and
+Markdown. Read coverage identifies the affected sections and recorded reasons;
+completed empty sections still mean no supported items were found, rather than
+analysis failure. Message locators use projected-message indexes, not JSONL line
+numbers. The sticky navigation has a shared scroll offset for section and
+evidence targets.
+
 ## 8. Cache and output contract
 
 ### Claude reference paths
@@ -731,6 +878,23 @@ Within one active run, the semantic manifest:
 
 Analyzer failures remain explicit: an active task that cannot complete yields a
 partial or failed report state rather than silent healthy coverage.
+
+State mutations are exclusive per run. Overlapping commands fail explicitly as
+busy without consuming an unaccepted submission; independent model analysis can
+still run in parallel. Recovery never expires a live owner's lock by elapsed
+time. CLI submission cleanup remains inside the transaction, and a cleanup
+failure after acceptance is reported as a warning on the accepted result.
+Lock-release failures similarly preserve successful results with a cleanup
+warning; they do not turn completed work into an unqualified failure. A process
+can retry cleanup of its completed transaction before starting another.
+
+Report output uses a separate directory transaction with staged formats and
+recoverable backups. Publication failure restores the previous latest files;
+an interrupted replacement is recovered before the next publication. Unfinished
+recovery retains its journal and reports an explicit error. This is recovery
+and writer exclusion, not a group-atomic snapshot for external readers.
+Agent Insight's historical HTML name adds a UUID to the reference timestamp
+shape, so separate publications cannot overwrite one another within a second.
 
 Agent Insight writes to its own data root rather than overwriting Claude's
 native `usage-data`. Its parity renderer must still match the reference HTML
@@ -889,3 +1053,9 @@ gh api repos/anthropics/claude-code/contents/CHANGELOG.md --jq .content \
   | base64 -d \
   | awk 'BEGIN{v=""} /^## /{v=$0} /\/insights/{print v " :: " NR ":" $0}'
 ```
+
+## Project-area estimates and cited-session context
+
+The project-area JSON shape remains unchanged. `session_count` must now be a native safe integer between the distinct canonical citation count and the completed analyzed session count; coerced strings, booleans, nulls, fractions, and impossible totals are rejected. HTML and Markdown label these values as model estimates and explain that citations are representative rather than complete membership. This is an intentional validation and presentation extension, not an exact Claude wording claim.
+
+Audit context metrics resolve canonical IDs before unique aliases, deduplicate matched sessions, and expose unresolved references. Missing metrics remain unknown and partial subtotals disclose recorded coverage. These whole-session totals do not establish causal cost.

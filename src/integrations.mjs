@@ -69,7 +69,7 @@ Then perform this one-shot fused workflow from the project root:
 4. Write each result object as JSON to that task's exact, unique \`submissionPath\`. Never copy transcript text into another file.
 5. Ingest completed results one at a time with \`agent-insight semantic ingest --run <run-id> --task <task-id> --host ${agent} --model <same-exact-model-id-or-unknown>\`.
 6. Repeat from step 2 until the next task says the run is complete.
-7. Run \`agent-insight semantic finalize --run <run-id> --host ${agent} --model <same-exact-model-id-or-unknown>\`, open the generated fused report, and give the user its location plus a concise evidence-backed summary that leads with: (1) the single highest-leverage change or At a Glance quick win, (2) the three hard truths when audit completed, and (3) one automation candidate only if relevant. Prefer the paste-ready rewrite over a long metric dump.
+7. Run \`agent-insight semantic finalize --run <run-id> --host ${agent} --model <same-exact-model-id-or-unknown>\`, open the generated fused report, and give the user its location plus a concise evidence-backed summary that leads with: (1) the strongest supported observation or justified highest-leverage change, (2) up to three evidence-backed hard truths when audit completed, and (3) one automation candidate only if relevant. If no problem or improvement is supported, say so and state any evidence limits. Use a paste-ready rewrite only when a change is justified.
 
 If \`semantic next\` returns \`source_changed\`, fail that frozen task with reason \`source_changed\` and continue. If a model call or schema validation fails, retry once when safe. If it still fails, run \`agent-insight semantic fail --run <run-id> --task <task-id> --reason analyzer_failure --host ${agent} --model <same-exact-model-id-or-unknown>\` (use \`invalid_analyzer_response\` for invalid JSON/schema), then continue so the final report exposes partial semantic or audit-extension coverage. If the user interrupts, leave the task pending and preserve the run ID for resumption. Never invent a completed result, silently skip a task, claim full coverage when the run is incomplete, or use any removed cache command.`;
 }
@@ -86,6 +86,10 @@ export function renderIntegration(agent) {
       'import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";',
       '',
       'const execFileAsync = promisify(execFile);',
+      '',
+      'function shellQuote(value: string) {',
+      "  return \"'\" + value.replace(/'/g, \"'\\\"'\\\"'\") + \"'\";",
+      '}',
       '',
       'export default function (pi: ExtensionAPI) {',
       '  pi.registerCommand("agent-insights", {',
@@ -133,19 +137,22 @@ export function renderIntegration(agent) {
       '          const result = JSON.parse(stdout);',
       '          runId = result.runId ?? result.id;',
       '        } catch {',
-      '          runId = stdout.match(/[a-f0-9-]{36}/)?.[0];',
+      '          runId = stdout.trim();',
       '        }',
-      '        if (!runId) throw new Error("prepare did not return a semantic run ID");',
+      '        if (typeof runId !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(runId)) throw new Error("prepare did not return a semantic run ID");',
+      '        const runArg = shellQuote(runId);',
+      '        const modelArg = shellQuote(modelId);',
       '',
+      '        ctx.ui.notify(`Agent Insights run ${runId} prepared; analysis pending. Resume with: agent-insight semantic next --run ${runArg} --host pi --model ${modelArg}`, "info");',
       '        pi.sendUserMessage([',
       '          `Continue the fused Agent Insights run ${runId} with the current Pi model. Do not start another Pi process, switch providers, or use another model. There is no cross-run cache command.`,',
-      '          `1. Run agent-insight semantic next --run ${runId} --host pi --model ${modelId} and parse the JSON task.`,',
+      '          `1. Run agent-insight semantic next --run ${runArg} --host pi --model ${modelArg} and parse the JSON task.`,',
       '          "2. Task kinds include session facets, aggregate_batch (baseline), session_audit, and audit_aggregate. Audit tasks follow baseline aggregates. If it is aggregate_batch, analyze all listed requests in parallel with the current Pi model; otherwise analyze the single request. Write each required result JSON to its unique submissionPath. Do not copy transcript text elsewhere.",',
-      '          `3. Ingest completed results one at a time with agent-insight semantic ingest --run ${runId} --task <task-id> --host pi --model ${modelId}.`,',
+      '          `3. Ingest completed results one at a time with agent-insight semantic ingest --run ${runArg} --task <task-id> --host pi --model ${modelArg}.`,',
       '          "4. Repeat steps 1-3 until the next task says complete.",',
-          '          `5. Run agent-insight semantic finalize --run ${runId} --host pi --model ${modelId}, then open the fused report and lead the summary with the one highest-leverage change (or quick win), the three hard truths, and at most one automation candidate.`,',
-      '          `If next returns source_changed, fail that task with reason source_changed. If analysis or validation still fails after one retry, run agent-insight semantic fail --run ${runId} --task <task-id> --reason analyzer_failure --host pi --model ${modelId}, continue the loop, and let the report show partial coverage. On user interruption, preserve the pending run.`,',
-      '        ].join("\\n"));',
+          '          `5. Run agent-insight semantic finalize --run ${runArg} --host pi --model ${modelArg}, then open the fused report and lead the summary with the strongest supported observation or justified highest-leverage change, up to three evidence-backed hard truths, and at most one relevant automation candidate. If no problem or improvement is supported, say so and state any evidence limits.`,',
+      '          `If next returns source_changed, fail that task with reason source_changed. If analysis or validation still fails after one retry, run agent-insight semantic fail --run ${runArg} --task <task-id> --reason analyzer_failure --host pi --model ${modelArg}, continue the loop, and let the report show partial coverage. On user interruption, preserve the pending run.`,',
+      '        ].join("\\n"), { deliverAs: "followUp" });',
       '      } catch (error) {',
       '        ctx.ui.notify("agent-insight failed: " + (error instanceof Error ? error.message : String(error)), "error");',
       '      }',

@@ -83,6 +83,6 @@ test('renders full read coverage in the default HTML artifact', () => {
   assert.match(html, /读取覆盖/);
   assert.doesNotMatch(html, /NaN/);
   assert.match(html, /experimental transcript format/);
-  assert.match(html, /discovery capped at 10 files per root/);
-  assert.match(html, /4 sessions without an identifiable project were excluded/);
+  assert.match(html, /每个根目录最多发现 10 个文件/);
+  assert.match(html, /排除了 4 个无法识别项目的会话/);
 });

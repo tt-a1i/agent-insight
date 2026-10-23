@@ -33,6 +33,9 @@ test('Markdown host commands orchestrate the fused one-shot loop with the active
     assert.match(command, /no cross-run cache command/i);
     assert.match(command, /highest-leverage change|hard truths/i);
     assert.match(command, /paste-ready rewrite/i);
+    assert.match(command, /up to three evidence-backed hard truths/i);
+    assert.match(command, /If no problem or improvement is supported, say so/i);
+    assert.doesNotMatch(command, /the three hard truths/i);
     assert.doesNotMatch(command, /agent-insight\s+cache\b/i);
     assert.doesNotMatch(command, childCommand);
   }
@@ -62,6 +65,9 @@ test('Pi command asks both choices in its UI before handing the fused run to the
   assert.match(extension, /agent-insight semantic finalize --run/);
   assert.match(extension, /fused.*report/i);
   assert.match(extension, /current Pi model/i);
+  assert.match(extension, /up to three evidence-backed hard truths/i);
+  assert.match(extension, /If no problem or improvement is supported, say so/i);
+  assert.doesNotMatch(extension, /the three hard truths/i);
   assert.match(extension, /no cross-run cache command/i);
   assert.doesNotMatch(extension, /agent-insight\s+cache\b/i);
   assert.doesNotMatch(extension, /execFileAsync\("pi"|\bpi\s+(?:-p|--print)\b/i);

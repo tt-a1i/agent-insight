@@ -226,7 +226,7 @@ test('long session projections are summarized in bounded current-host chunks', a
     const messageIndex = current.input.messages[0].index;
     await ingestSemanticResult({
       runsRoot, runId: prepared.id, taskId: current.id,
-      result: { summary: 'The cumulative synthesis preserves supported goals and outcomes.', evidence: [{ message_indexes: [messageIndex], description: 'This chunk adds a supported request.' }] }
+      result: { summary: 'The cumulative synthesis preserves supported goals and outcomes.', evidence: [{ message_indexes: [messageIndex], description: 'This chunk adds a supported request.', quotation: current.input.messages[0].role === 'user' ? current.input.messages[0].text.slice(0, 80) : undefined }] }
     });
     current = await nextSemanticTask({ runsRoot, runId: prepared.id });
   }
@@ -235,6 +235,7 @@ test('long session projections are summarized in bounded current-host chunks', a
   const supported = new Set(beforeFacet.sessions[0].chunkResults.at(-1).evidence.flatMap((item) => item.messageIndexes));
   const unsupported = Array.from({ length: beforeFacet.sessions[0].messageCount }, (_, index) => index + 1).find((index) => !supported.has(index));
   const supportedIndex = [...supported][0];
+  const supportedQuotation = beforeFacet.sessions[0].chunkResults.at(-1).evidence[0].quotation;
   await assert.rejects(ingestSemanticResult({
     runsRoot, runId: prepared.id, taskId: current.id,
     result: {
@@ -254,11 +255,11 @@ test('long session projections are summarized in bounded current-host chunks', a
       evidence: [{
         message_indexes: [supportedIndex],
         description: 'A supported request underlies the synthesis.',
-        quotation: `Request 0 ${'u'.repeat(40)}`
+        quotation: supportedQuotation
       }]
     }
   });
-  assert.equal(facet.evidence[0].quotation, `Request 0 ${'u'.repeat(40)}`);
+  assert.equal(facet.evidence[0].quotation, supportedQuotation);
   assert.equal((await getSemanticRun({ runsRoot, runId: prepared.id })).sessions[0].status, 'complete');
 });
 
@@ -314,7 +315,12 @@ test('an analyzer failure becomes a visible partial report instead of a permanen
   assert.equal(final.report.parity.structuralStatus, 'partial');
   assert.equal(final.report.parity.dataStatus, 'partial');
   assert.equal(final.report.coverage.semanticFailures[0].reason, 'invalid_analyzer_response');
-  assert.match(await readFile(final.files.markdown, 'utf8'), /Semantic coverage is partial: 1 invalid analyzer response/);
+  assert.match(await readFile(final.files.markdown, 'utf8'), /语义分析覆盖不完整：1 invalid\\_analyzer\\_response/);
+  for (const file of [final.files.markdown, final.files.html]) {
+    const content = await readFile(file, 'utf8');
+    assert.match(content, /没有会话完成语义分析|No sessions completed semantic analysis/);
+    assert.doesNotMatch(content, /已完成分析，本节没有证据支持的条目|Analysis completed; no evidence-backed items/);
+  }
 });
 
 test('finalize removes transient submissions while keeping the manifest and report artifacts', async () => {
@@ -363,7 +369,7 @@ test('oversized session audits are exposed and ingested as bounded chunks', asyn
       type: 'user',
       timestamp: new Date(Date.UTC(2026, 6, 1, 9, index)).toISOString(),
       sessionId: 'long-audit',
-      message: { role: 'user', content: `Audit request ${index} ${'u'.repeat(500)}` }
+      message: { role: 'user', content: index === 0 ? `Audit request 0 ${'u'.repeat(50000)} UNSEEN_TAIL_MUST_NOT_BE_CITED` : `Audit request ${index} ${'u'.repeat(500)}` }
     }));
     records.push(JSON.stringify({
       type: 'assistant',
@@ -403,6 +409,22 @@ test('oversized session audits are exposed and ingested as bounded chunks', asyn
   assert.equal(task.kind, 'session_audit_chunk');
   assert.ok(task.request.prompt.length <= 30_000);
   assert.match(task.id, /^audit:session-chunk:/);
+  assert.equal(task.input.messages.length, 1);
+  assert.equal(task.input.messages[0].text.includes('UNSEEN_TAIL_MUST_NOT_BE_CITED'), false);
+  await assert.rejects(ingestSemanticResult({
+    runsRoot,
+    runId: prepared.id,
+    taskId: task.id,
+    result: {
+      summary: 'Unsupported unseen tail',
+      findings: [{
+        category: 'vague_broad_commands', severity: 'high', evidence_posture: 'observed_instance',
+        accusation: 'Tail claim', explanation: 'Claims a message suffix not in the exposed chunk.',
+        quotations: ['UNSEEN_TAIL_MUST_NOT_BE_CITED'], locators: [{ message_indexes: [1] }],
+        better_alternative: 'Name the exact acceptance check.', root_cause: 'unseen tail'
+      }]
+    }
+  }), /fabricated quotation/);
 
   let current = task;
   while (current.kind === 'session_audit_chunk') {
@@ -417,7 +439,7 @@ test('oversized session audits are exposed and ingested as bounded chunks', asyn
         findings: [{
           category: 'vague_broad_commands',
           severity: 'high',
-          evidence_posture: 'established_pattern',
+          evidence_posture: 'observed_instance',
           accusation: 'Broad asks keep stacking.',
           explanation: 'The chunk preserves a repeated permission-without-criteria habit.',
           quotations: [quotation],
@@ -443,7 +465,7 @@ test('oversized session audits are exposed and ingested as bounded chunks', asyn
       findings: [{
         category: 'vague_broad_commands',
         severity: 'high',
-        evidence_posture: 'established_pattern',
+        evidence_posture: 'observed_instance',
         accusation: 'Broad asks keep stacking.',
         explanation: 'The synthesis keeps the permission-without-criteria habit.',
         quotations: supported.quotations,
@@ -456,9 +478,27 @@ test('oversized session audits are exposed and ingested as bounded chunks', asyn
   });
   const afterSession = await getSemanticRun({ runsRoot, runId: prepared.id });
   assert.equal(afterSession.extensions.userAudit.sessions[session.id].findings.length, 1);
+  assert.equal(afterSession.extensions.userAudit.sessions[session.id].userMessageIndexes.length, 100);
+  assert.ok(afterSession.extensions.userAudit.sessions[session.id].userMessages.length < 12);
+  assert.equal(afterSession.extensions.userAudit.sessions[session.id].userTexts, undefined);
   assert.equal(afterSession.extensions.userAudit.sessionChunks[session.id], undefined);
 
   const aggregateTask = await nextSemanticTask({ runsRoot, runId: prepared.id });
   assert.ok(['audit_aggregate', 'audit_aggregate_chunk'].includes(aggregateTask.kind));
   assert.ok(aggregateTask.request.prompt.length <= 30_000);
+});
+
+
+test('finalized zero-candidate placeholders never claim completed zero-result analysis', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agent-insight-empty-analysis-'));
+  const { runsRoot, prepared } = await prepareFixture(home, { candidates: [] });
+  assert.equal((await nextSemanticTask({ runsRoot, runId: prepared.id })).kind, 'complete');
+  const final = await finalizeSemanticRun({ runsRoot, runId: prepared.id, outputDirectory: join(home, 'report') });
+  assert.equal(final.report.semantic.sessions.length, 0);
+  for (const file of [final.files.markdown, final.files.html]) {
+    const content = await readFile(file, 'utf8');
+    assert.match(content, /没有会话完成语义分析|No sessions completed semantic analysis/);
+    assert.doesNotMatch(content, /已完成分析，本节没有证据支持的条目|Analysis completed; no evidence-backed items/);
+    assert.doesNotMatch(content, /href="#coach-primary-action"/);
+  }
 });

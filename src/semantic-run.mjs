@@ -1,20 +1,25 @@
-import { efficiencyToFindings } from './efficiency.mjs';
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
-import { ANALYSIS_PROTOCOL_VERSION, createSessionChunkRequest, createSessionFacetFromChunksRequest, createSessionFacetRequest, splitSessionMessages, validateSessionChunkResult, validateSessionFacet } from './protocol.mjs';
-import { AGGREGATE_TASKS, createAggregateChunkRequest, createAggregateRequest, createAtAGlanceChunkRequest, splitAggregateSections, splitAggregateSessions, validateAggregateChunkResult, validateAggregateResult } from './aggregate-protocol.mjs';
+import { ANALYSIS_PROTOCOL_VERSION, createSessionChunkRequest, createSessionFacetFromChunksRequest, createSessionFacetRequest, projectMessages, splitSessionMessages, validateSessionChunkResult, validateSessionFacet } from './protocol.mjs';
+import { AGGREGATE_TASKS, createAggregateChunkRequest, createAggregateRequest, createAtAGlanceChunkRequest, splitAggregateSections, splitAggregateSessions, legacySplitAggregateSessions, legacySplitAggregateSections, validateAggregateChunkResult, validateAggregateResult } from './aggregate-protocol.mjs';
 import {
   AUDIT_PROTOCOL_VERSION,
+  auditAssessmentContext,
+  auditCarryAssessmentContext,
+  auditAggregateEvidenceContext,
+  auditAggregateUnits,
+  auditAggregatePayloadSize,
+  materializeAuditAggregateUnits,
   createAuditAggregateChunkRequest,
   createAuditAggregateRequest,
   createSessionAuditChunkRequest,
   createSessionAuditFromChunksRequest,
   createSessionAuditRequest,
   splitAuditSessions,
-  splitAuditUserMessages,
+  splitAuditMessages,
   validateAuditAggregateChunkResult,
   validateAuditAggregateResult,
   validateSessionAuditChunkResult,
@@ -26,9 +31,11 @@ import { summarizeSessions } from './analyze.mjs';
 import { writeReport } from './report.mjs';
 import { exportOpenCodeSession } from './opencode.mjs';
 import { normalizeLocale } from './i18n.mjs';
+import { sessionIsWithinWindow, sessionMatchesProject } from './adapters.mjs';
+import { DirectoryLockCleanupError, withRunLock } from './run-lock.mjs';
 
-const RUN_SCHEMA = 'agent-insight/semantic-run-v1';
-const PROMPT_VERSION = 'session-facet-v1';
+const RUN_SCHEMA = 'agent-insight/semantic-run-v5';
+const PROMPT_VERSION = 'session-facet-v5';
 
 function runLocale(runOrRequest) {
   return normalizeLocale(runOrRequest?.request?.locale ?? runOrRequest?.locale);
@@ -107,13 +114,16 @@ function aggregateContext(run) {
   return {
     metrics,
     sessions: semanticSessions,
+    analyzedSessionCount: new Set(semanticSessions.map((session) => session.id)).size,
     sections: run.sections,
-    locale: runLocale(run)
+    locale: runLocale(run),
+    legacyAggregatePlanning: run.aggregatePlanningVersion !== 2
   };
 }
 
 function aggregateGroups(section, context) {
-  return section === 'at_a_glance' ? splitAggregateSections(context.sections) : splitAggregateSessions(context.sessions);
+  if (context.legacyAggregatePlanning) return section === 'at_a_glance' ? legacySplitAggregateSections(context.sections) : legacySplitAggregateSessions(context.sessions);
+  return section === 'at_a_glance' ? splitAggregateSections(context.sections) : splitAggregateSessions(context.sessions, 12_000, context.metrics);
 }
 
 function evidenceIdsIn(value, output = new Set()) {
@@ -192,14 +202,123 @@ function ensureUserAuditExtension(run) {
   return run.extensions.userAudit;
 }
 
+function auditAggregateBatch(run, context, index, allocate = false) {
+  const extension = ensureUserAuditExtension(run);
+  // Pre-planning checkpoints retain the exact old grouping, including frozen
+  // active tasks. New runs persist the plan before exposing their first batch.
+  if (!extension.aggregatePlan && (extension.aggregateChunks.length || run.activeTask?.id.startsWith('audit:aggregate'))) {
+    const groups = splitAuditSessions(context.sessions, 12_000, true);
+    return groups[index] ? { sessions: groups[index], total: groups.length } : null;
+  }
+  if (!extension.aggregatePlan) {
+    if (!allocate) return null;
+    extension.aggregatePlan = { units: auditAggregateUnits(context.sessions), batches: [] };
+  }
+  const plan = extension.aggregatePlan;
+  const carry = extension.aggregateChunks.at(-1) ?? null;
+  if (plan.batches[index]) {
+    const batch = plan.batches[index];
+    return { sessions: materializeAuditAggregateUnits(context, plan.units.slice(batch.start, batch.end)), total: batch.total };
+  }
+  if (!allocate || index !== plan.batches.length) return null;
+  const start = index ? plan.batches[index - 1].end : 0;
+  if (start >= plan.units.length) return null;
+  let end = start;
+  for (let candidate = start + 1; candidate <= plan.units.length; candidate += 1) {
+    const sessions = materializeAuditAggregateUnits(context, plan.units.slice(start, candidate));
+    const request = createAuditAggregateChunkRequest(context, sessions, index, null, carry);
+    if (request.prompt.length > 30_000) break;
+    if (end > start && auditAggregatePayloadSize(sessions) > 12_000) break;
+    end = candidate;
+  }
+  if (end === start) throw new Error('Audit aggregate safety limit exceeded: an atomic item plus retained carry cannot fit the prompt.');
+  const batch = { start, end, total: end === plan.units.length ? index + 1 : null };
+  plan.batches.push(batch);
+  return { sessions: materializeAuditAggregateUnits(context, plan.units.slice(start, end)), total: batch.total };
+}
+
+function auditAggregateBatchesComplete(run, context) {
+  const extension = ensureUserAuditExtension(run);
+  if (!extension.aggregatePlan) return extension.aggregateChunks.length >= splitAuditSessions(context.sessions, 12_000, true).length;
+  const plan = extension.aggregatePlan;
+  return extension.aggregateChunks.length === plan.batches.length && (plan.batches.at(-1)?.end ?? 0) === plan.units.length;
+}
+
 function auditSessionChunkState(run, sessionId) {
   return ensureUserAuditExtension(run).sessionChunks[sessionId] ?? null;
 }
 
+// Persist only source offsets so adaptive chunk boundaries survive next/resume/
+// ingest without retaining another copy of the full transcript.
+function chunkRanges(chunks, offsets = new Map()) {
+  return chunks.map((chunk) => chunk.map((message) => {
+    const start = offsets.get(message.index) ?? 0;
+    const end = start + message.text.length;
+    offsets.set(message.index, end);
+    return { index: message.index, start, end };
+  }));
+}
+
+function sessionChunkMessages(messages, state, index, audit = false) {
+  const originals = new Map((audit ? projectMessages(messages) : messages).map((message) => [message.index, message]));
+  if (!state.chunkRanges) {
+    const chunks = audit ? splitAuditMessages(messages) : splitSessionMessages(messages);
+    state.chunkRanges = chunkRanges(chunks);
+  }
+  return state.chunkRanges[index].map((range) => {
+    const original = originals.get(range.index);
+    const text = original.text.slice(range.start, range.end);
+    return { ...original, text };
+  });
+}
+
+function boundedSessionChunk(input, state, index, makeRequest, audit = false) {
+  let messages = sessionChunkMessages(input.messages, state, index, audit);
+  let request = makeRequest(messages, state.chunkCount);
+  if (request.prompt.length > 30_000) {
+    // Measure the entire scaffold plus validated carry. The small reserve covers
+    // changed chunk-count digits after subdivision, without dropping evidence.
+    const available = 30_000 - makeRequest([], state.chunkCount).prompt.length + 2 - 64;
+    if (available <= 2) throw new Error('Session chunk safety limit exceeded: prior synthesis and metadata leave no room for transcript text.');
+    let parts;
+    try {
+      parts = splitSessionMessages(messages, available);
+    } catch (error) {
+      throw new Error(`Session chunk safety limit exceeded: ${error.message}`);
+    }
+    const offsets = new Map();
+    for (const range of state.chunkRanges[index]) {
+      if (!offsets.has(range.index)) offsets.set(range.index, range.start);
+    }
+    state.chunkRanges.splice(index, 1, ...chunkRanges(parts, offsets));
+    state.chunkCount = state.chunkRanges.length;
+    state.chunkMessageIndexes = state.chunkRanges.map((ranges) => ranges.map((range) => range.index));
+    messages = sessionChunkMessages(input.messages, state, index, audit);
+    request = makeRequest(messages, state.chunkCount);
+  }
+  if (request.prompt.length > 30_000) throw new Error('Session chunk safety limit exceeded after budgeting transcript and prior synthesis.');
+  return { messages, request };
+}
+
+// Carry only quotations already validated in the preceding chunk. Reloading a
+// whole message by index would expose unseen text when a long message is split.
+function auditCarryMessages(input, carry = {}) {
+  const original = new Map(input.messages.filter((message) => message.role === 'user').map((message) => [message.index, message.text]));
+  return [...(carry.findings ?? []), ...(carry.strengths ?? []), ...(carry.workflowEvidence ?? [])].flatMap((finding) => (finding.locators ?? []).flatMap((locator) =>
+    (locator.messageIndexes ?? []).flatMap((index) => {
+      const text = original.get(index);
+      if (typeof text !== 'string') return [];
+      const quotations = (finding.quotations ?? []).filter((quotation) => text.includes(quotation));
+      return (quotations.length ? quotations : ['']).map((quotation) => ({ index, role: 'user', text: quotation }));
+    })
+  ));
+}
+
 function initAuditSessionChunks(run, sessionId, messages) {
   const extension = ensureUserAuditExtension(run);
-  const chunks = splitAuditUserMessages(messages);
+  const chunks = splitAuditMessages(messages);
   extension.sessionChunks[sessionId] = {
+    chunkRanges: chunkRanges(chunks),
     chunkMessageIndexes: chunks.map((chunk) => chunk.map((message) => message.index)),
     chunkCount: chunks.length,
     chunkResults: []
@@ -220,8 +339,12 @@ function auditAggregateContext(run) {
         projectPath: session.projectPath ?? null,
         projectLabel: session.projectLabel ?? null,
         facet: session.facet,
-        userTexts: audit?.userTexts ?? [],
-        findings: audit?.findings ?? []
+        userMessages: audit?.userMessages ?? [],
+        userMessageIndexes: audit?.userMessageIndexes ?? [],
+        findings: audit?.findings ?? [],
+        strengths: audit?.strengths ?? [],
+        workflowEvidence: audit?.workflowEvidence ?? [],
+        assessmentContext: auditAssessmentContext(audit?.assessmentContext)
       };
     })
   };
@@ -294,12 +417,14 @@ async function cleanTransientRunFiles(runsRoot, runId) {
   }));
 }
 
-async function exposeTask(runsRoot, run, task, _messages = null) {
+async function exposeTask(runsRoot, run, task, messages = null) {
+  if (task.request?.prompt.length > 30_000) throw new Error('Semantic prompt safety limit exceeded (30,000 characters).');
   if (run.activeTask && run.activeTask.id !== task.id) throw new Error(`Semantic task ${run.activeTask.id} is still awaiting ingest or fail.`);
   if (!run.activeTask) {
     run.activeTask = {
       id: task.id,
-      exposedAt: new Date().toISOString()
+      exposedAt: new Date().toISOString(),
+      ...(['session_chunk', 'session_facet'].includes(task.kind) && messages ? { messages } : {})
     };
     await writeManifest(runsRoot, run);
   }
@@ -319,12 +444,12 @@ async function resumeActiveTask(runsRoot, run) {
       return { kind: 'source_changed', id, runId: run.id, submissionPath, message: 'The source changed after this task was exposed. Mark it failed with reason source_changed, then continue.' };
     }
     if (chunkMatch) {
-      const chunks = splitSessionMessages(input.messages);
       const index = Number(chunkMatch[2]);
+      const messages = sessionChunkMessages(input.messages, session, index);
       return {
         id, kind: 'session_chunk', runId: run.id,
-        input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages: chunks[index] },
-        request: createSessionChunkRequest(withLocale(input, runLocale(run)), chunks[index], index, chunks.length, session.chunkResults.at(-1) ?? null),
+        input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages },
+        request: createSessionChunkRequest(withLocale(input, runLocale(run)), messages, index, session.chunkCount, session.chunkResults.at(-1) ?? null),
         submissionPath
       };
     }
@@ -361,15 +486,15 @@ async function resumeActiveTask(runsRoot, run) {
     if (input.contentHash !== session.contentHash || input.opaqueId !== session.id) {
       return { kind: 'source_changed', id, runId: run.id, submissionPath, message: 'The source changed after this task was exposed. Mark it failed with reason source_changed, then continue.' };
     }
-    const chunks = splitAuditUserMessages(input.messages);
     const index = Number(auditSessionChunk[2]);
     const state = auditSessionChunkState(run, session.id);
+    const messages = sessionChunkMessages(input.messages, state, index, true);
     return {
       id,
       kind: 'session_audit_chunk',
       runId: run.id,
-      input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages: chunks[index] },
-      request: createSessionAuditChunkRequest(withLocale(input, runLocale(run)), chunks[index], index, chunks.length, state?.chunkResults?.at(-1) ?? null),
+      input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages },
+      request: createSessionAuditChunkRequest(withLocale(input, runLocale(run)), messages, index, state.chunkCount, state?.chunkResults?.at(-1) ?? null),
       submissionPath
     };
   }
@@ -403,15 +528,16 @@ async function resumeActiveTask(runsRoot, run) {
   const auditAggregateChunk = /^audit:aggregate-chunk:(\d+)$/.exec(id);
   if (auditAggregateChunk) {
     const context = auditAggregateContext(run);
-    const groups = splitAuditSessions(context.sessions);
     const index = Number(auditAggregateChunk[1]);
     const extension = ensureUserAuditExtension(run);
     const carry = extension.aggregateChunks.at(-1) ?? null;
+    const batch = auditAggregateBatch(run, context, index);
+    if (!batch) throw new Error('The frozen audit aggregate batch is unavailable.');
     return {
       id,
       kind: 'audit_aggregate_chunk',
       runId: run.id,
-      request: createAuditAggregateChunkRequest(context, groups[index], index, groups.length, carry),
+      request: createAuditAggregateChunkRequest(context, batch.sessions, index, batch.total, carry),
       submissionPath
     };
   }
@@ -435,6 +561,9 @@ async function resumeActiveTask(runsRoot, run) {
 
 export async function getSemanticRun({ runsRoot, runId }) {
   const document = JSON.parse(await readFile(manifestPath(runsRoot, runId), 'utf8'));
+  if (['agent-insight/semantic-run-v1', 'agent-insight/semantic-run-v2', 'agent-insight/semantic-run-v3', 'agent-insight/semantic-run-v4'].includes(document?.schema) && document.id === runId) {
+    throw new Error('This run uses an older evidence protocol. Run prepare again to start a new analysis; the existing checkpoint and reports are preserved.');
+  }
   if (document?.schema !== RUN_SCHEMA || document.id !== runId) throw new Error('Invalid semantic run manifest.');
   return document;
 }
@@ -500,9 +629,8 @@ export async function semanticSubmissionForTask({ runsRoot, runId, taskId }) {
   } else if (id.startsWith('audit:aggregate-chunk:')) {
     if (!auditAggregatePending(run)) throw new Error('The submitted audit aggregate chunk is not the next pending audit task.');
     const context = auditAggregateContext(run);
-    const groups = splitAuditSessions(context.sessions);
     const expectedIndex = ensureUserAuditExtension(run).aggregateChunks.length;
-    if (`audit:aggregate-chunk:${expectedIndex}` !== id || expectedIndex >= groups.length) {
+    if (`audit:aggregate-chunk:${expectedIndex}` !== id || !auditAggregateBatch(run, context, expectedIndex)) {
       throw new Error('The submitted audit aggregate chunk is not the next pending audit task.');
     }
   } else if (id === 'audit:aggregate') {
@@ -510,8 +638,7 @@ export async function semanticSubmissionForTask({ runsRoot, runId, taskId }) {
     const context = auditAggregateContext(run);
     const direct = createAuditAggregateRequest(context);
     if (direct.prompt.length > 30_000) {
-      const groups = splitAuditSessions(context.sessions);
-      if (ensureUserAuditExtension(run).aggregateChunks.length < groups.length) {
+      if (!auditAggregateBatchesComplete(run, context)) {
         throw new Error('Audit aggregate chunks must complete before the final aggregate task.');
       }
     }
@@ -521,11 +648,33 @@ export async function semanticSubmissionForTask({ runsRoot, runId, taskId }) {
   return join(runDirectory(runsRoot, runId), 'submission.json');
 }
 
-export async function prepareSemanticRun({ runsRoot, request, candidates, analyzer, diagnostics = [] }) {
+export async function prepareSemanticRun({ runsRoot, request, candidates, analyzer, diagnostics = [], projectFilter = { requested: false, unknownProjectExcluded: 0 } }) {
+  let selectedAt = null;
+  if (request.selectedAt !== undefined && request.selectedAt !== null) {
+    if (typeof request.selectedAt !== 'string' || !Number.isFinite(Date.parse(request.selectedAt))) throw new Error('request.selectedAt must be a valid selection timestamp.');
+    selectedAt = new Date(request.selectedAt).toISOString();
+  }
+  // Custom dates are stable without an anchor. Legacy rolling-window callers
+  // did not retain one; do not replace that unknown value with today's time.
+  const recheckTimeScope = Boolean(selectedAt || request.start || request.end);
+  const timeScope = {
+    days: request.days === 'all' ? Infinity : request.days ?? Infinity,
+    now: selectedAt ? Date.parse(selectedAt) : undefined,
+    start: request.start,
+    end: request.end
+  };
+  for (const [label, path] of [['request.project', request.project], ['projectFilter.path', projectFilter.path]]) {
+    if (path !== undefined && path !== null && (typeof path !== 'string' || !path.trim())) throw new Error(`${label} requires a non-empty project path.`);
+  }
+  if (request.project && projectFilter.path && resolve(request.project) !== resolve(projectFilter.path)) throw new Error('request.project and projectFilter.path must refer to the same project scope.');
   const id = randomUUID();
   const sessions = [];
   const preparationFailures = [];
   const runDiagnostics = structuredClone(diagnostics);
+  const projectScope = projectFilter.path ?? request.project;
+  const runProjectFilter = projectScope
+    ? { ...projectFilter, requested: true, path: resolve(projectScope), unknownProjectExcluded: projectFilter.unknownProjectExcluded ?? 0, mixedProjectExcluded: projectFilter.mixedProjectExcluded ?? 0 }
+    : structuredClone(projectFilter);
   for (const candidate of candidates) {
     const locator = normalizedLocator(candidate.locator);
     let input;
@@ -533,10 +682,30 @@ export async function prepareSemanticRun({ runsRoot, request, candidates, analyz
     try {
       input = await loadAnalysisInput(locator, candidate.source);
       deterministic = await loadDeterministicSession(locator, candidate.source);
+      if (deterministic.partial) {
+        const error = new Error(`Transcript is incomplete during semantic preparation (${deterministic.partialReason ?? 'unknown'}).`);
+        error.code = 'INCOMPLETE_TRANSCRIPT';
+        throw error;
+      }
+      if (recheckTimeScope && !sessionIsWithinWindow(deterministic, timeScope)) {
+        const error = new Error('Transcript metadata falls outside the selected time window.');
+        error.code = 'TIME_SCOPE_MISMATCH';
+        throw error;
+      }
+      if (projectScope && (!sessionMatchesProject(input, runProjectFilter.path) || !sessionMatchesProject(deterministic, runProjectFilter.path))) {
+        const error = new Error('Transcript metadata falls outside the requested project scope.');
+        error.code = 'PROJECT_SCOPE_MISMATCH';
+        throw error;
+      }
     } catch (error) {
-      const reason = /changed while|changed during|content changed/i.test(String(error?.message)) ? 'changed_during_read' : 'transcript_extraction_failed';
+      const reasons = { PROJECT_SCOPE_MISMATCH: 'project_scope_mismatch', TIME_SCOPE_MISMATCH: 'time_scope_mismatch', INCOMPLETE_TRANSCRIPT: 'incomplete_transcript' };
+      const reason = reasons[error?.code] ?? (/changed while|changed during|content changed/i.test(String(error?.message)) ? 'changed_during_read' : 'transcript_extraction_failed');
       preparationFailures.push({ source: candidate.source, reason });
-      const diagnostic = runDiagnostics.find((entry) => entry.source === candidate.source);
+      let diagnostic = runDiagnostics.find((entry) => entry.source === candidate.source);
+      if (!diagnostic) {
+        diagnostic = { source: candidate.source, coverage: 'partial' };
+        runDiagnostics.push(diagnostic);
+      }
       if (diagnostic) {
         diagnostic.coverage = 'partial';
         diagnostic.semanticFailures = (diagnostic.semanticFailures ?? 0) + 1;
@@ -567,6 +736,7 @@ export async function prepareSemanticRun({ runsRoot, request, candidates, analyz
     };
     if (session.analysisMode === 'chunked') {
       const chunks = splitSessionMessages(input.messages);
+      session.chunkRanges = chunkRanges(chunks);
       session.chunkMessageIndexes = chunks.map((chunk) => chunk.map((message) => message.index));
       session.chunkCount = chunks.length;
     }
@@ -579,11 +749,13 @@ export async function prepareSemanticRun({ runsRoot, request, candidates, analyz
   }
   const manifest = {
     schema: RUN_SCHEMA,
+    aggregatePlanningVersion: 2,
     id,
     createdAt: new Date().toISOString(),
-    request: { ...request, days: request.days === Infinity ? 'all' : request.days, locale: normalizeLocale(request.locale) },
+    request: { ...request, ...(selectedAt ? { selectedAt } : {}), days: request.days === Infinity ? 'all' : request.days, locale: normalizeLocale(request.locale) },
     analyzer: { host: analyzer.host, model: analyzer.model ?? null },
     diagnostics: runDiagnostics,
+    projectFilter: runProjectFilter,
     sessions,
     sections: {},
     sectionFailures: {},
@@ -603,7 +775,7 @@ export async function prepareSemanticRun({ runsRoot, request, candidates, analyz
   return { id, ...paths };
 }
 
-export async function nextSemanticTask({ runsRoot, runId }) {
+async function nextSemanticTaskUnlocked({ runsRoot, runId }) {
   const run = await getSemanticRun({ runsRoot, runId });
   if (run.aggregateBatch?.ids?.length) {
     const context = aggregateContext(run);
@@ -616,7 +788,11 @@ export async function nextSemanticTask({ runsRoot, runId }) {
       })
     };
   }
-  if (run.activeTask) return resumeActiveTask(runsRoot, run);
+  if (run.activeTask) {
+    const task = await resumeActiveTask(runsRoot, run);
+    if (task.request?.prompt.length > 30_000) throw new Error('Semantic prompt safety limit exceeded (30,000 characters).');
+    return task;
+  }
   while (true) {
     const session = run.sessions.find((candidate) => candidate.status === 'pending');
     if (!session) {
@@ -630,82 +806,91 @@ export async function nextSemanticTask({ runsRoot, runId }) {
             await writeManifest(runsRoot, run);
             continue;
           }
-          let request = createSessionAuditRequest(withLocale(input, runLocale(run)));
-          let state = auditSessionChunkState(run, auditSession.id);
-          if (request.prompt.length > 30_000 || state?.chunkCount) {
-            if (!state?.chunkCount) state = initAuditSessionChunks(run, auditSession.id, input.messages);
-            const chunks = splitAuditUserMessages(input.messages);
-            const chunkIndex = state.chunkResults.length;
-            if (chunkIndex < state.chunkCount) {
-              const chunkRequest = createSessionAuditChunkRequest(
-                withLocale(input, runLocale(run)),
-                chunks[chunkIndex],
-                chunkIndex,
-                chunks.length,
-                state.chunkResults.at(-1) ?? null
-              );
-              if (chunkRequest.prompt.length > 30_000) {
-                throw new Error(`Audit session safety limit exceeded for chunk ${chunkIndex + 1}.`);
+          try {
+            let request = createSessionAuditRequest(withLocale(input, runLocale(run)));
+            let state = auditSessionChunkState(run, auditSession.id);
+            if (request.prompt.length > 30_000 || state?.chunkCount) {
+              if (!state?.chunkCount) state = initAuditSessionChunks(run, auditSession.id, input.messages);
+              const chunkIndex = state.chunkResults.length;
+              if (chunkIndex < state.chunkCount) {
+                const { messages, request: chunkRequest } = boundedSessionChunk(input, state, chunkIndex,
+                  (messages, count) => createSessionAuditChunkRequest(withLocale(input, runLocale(run)), messages, chunkIndex, count, state.chunkResults.at(-1) ?? null), true
+                );
+                if (chunkRequest.prompt.length > 30_000) {
+                  throw new Error(`Audit session safety limit exceeded for chunk ${chunkIndex + 1}.`);
+                }
+                return exposeTask(runsRoot, run, {
+                  id: `audit:session-chunk:${auditSession.id}:${chunkIndex}`,
+                  kind: 'session_audit_chunk',
+                  runId,
+                  input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages },
+                  request: chunkRequest,
+                  submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+                });
               }
+              request = createSessionAuditFromChunksRequest(withLocale(auditSession, runLocale(run)), state.chunkResults.length ? [state.chunkResults.at(-1)] : []);
+              if (request.prompt.length > 30_000) throw new Error('Audit session safety limit exceeded for final session synthesis.');
               return exposeTask(runsRoot, run, {
-                id: `audit:session-chunk:${auditSession.id}:${chunkIndex}`,
-                kind: 'session_audit_chunk',
+                id: `audit:session:${auditSession.id}`,
+                kind: 'session_audit',
                 runId,
-                input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages: chunks[chunkIndex] },
-                request: chunkRequest,
+                request,
                 submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
               });
             }
-            request = createSessionAuditFromChunksRequest(withLocale(auditSession, runLocale(run)), state.chunkResults.length ? [state.chunkResults.at(-1)] : []);
-            if (request.prompt.length > 30_000) throw new Error('Audit session safety limit exceeded for final session synthesis.');
             return exposeTask(runsRoot, run, {
               id: `audit:session:${auditSession.id}`,
               kind: 'session_audit',
               runId,
+              input,
               request,
               submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
             });
+          } catch (error) {
+            if (!/safety limit/i.test(error.message)) throw error;
+            recordExtensionFailure(run, 'userAudit', `audit:session:${auditSession.id}`, 'safety_limit');
+            await writeManifest(runsRoot, run);
+            continue;
           }
-          return exposeTask(runsRoot, run, {
-            id: `audit:session:${auditSession.id}`,
-            kind: 'session_audit',
-            runId,
-            input,
-            request,
-            submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
-          });
         }
         if (auditAggregatePending(run)) {
-          const context = auditAggregateContext(run);
-          let request = createAuditAggregateRequest(context);
-          if (request.prompt.length > 30_000) {
-            const groups = splitAuditSessions(context.sessions);
-            const extension = ensureUserAuditExtension(run);
-            const chunkIndex = extension.aggregateChunks.length;
-            if (chunkIndex < groups.length) {
-              const carry = extension.aggregateChunks.at(-1) ?? null;
-              const chunkRequest = createAuditAggregateChunkRequest(context, groups[chunkIndex], chunkIndex, groups.length, carry);
-              if (chunkRequest.prompt.length > 30_000) {
-                throw new Error(`Audit aggregate safety limit exceeded for chunk ${chunkIndex + 1}.`);
+          try {
+            const context = auditAggregateContext(run);
+            let request = createAuditAggregateRequest(context);
+            if (request.prompt.length > 30_000) {
+              const extension = ensureUserAuditExtension(run);
+              const chunkIndex = extension.aggregateChunks.length;
+              const batch = auditAggregateBatch(run, context, chunkIndex, true);
+              if (batch) {
+                const carry = extension.aggregateChunks.at(-1) ?? null;
+                const chunkRequest = createAuditAggregateChunkRequest(context, batch.sessions, chunkIndex, batch.total, carry);
+                if (chunkRequest.prompt.length > 30_000) {
+                  throw new Error(`Audit aggregate safety limit exceeded for chunk ${chunkIndex + 1}.`);
+                }
+                return exposeTask(runsRoot, run, {
+                  id: `audit:aggregate-chunk:${chunkIndex}`,
+                  kind: 'audit_aggregate_chunk',
+                  runId,
+                  request: chunkRequest,
+                  submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+                });
               }
-              return exposeTask(runsRoot, run, {
-                id: `audit:aggregate-chunk:${chunkIndex}`,
-                kind: 'audit_aggregate_chunk',
-                runId,
-                request: chunkRequest,
-                submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
-              });
+              request = createAuditAggregateRequest({ ...context, chunkSummaries: [extension.aggregateChunks.at(-1)] });
+              if (request.prompt.length > 30_000) throw new Error('Audit aggregate safety limit exceeded for final synthesis.');
             }
-            request = createAuditAggregateRequest({ ...context, chunkSummaries: [extension.aggregateChunks.at(-1)] });
-            if (request.prompt.length > 30_000) throw new Error('Audit aggregate safety limit exceeded for final synthesis.');
+            return exposeTask(runsRoot, run, {
+              id: 'audit:aggregate',
+              kind: 'audit_aggregate',
+              runId,
+              request,
+              submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+            });
+          } catch (error) {
+            if (!/safety limit/i.test(String(error?.message))) throw error;
+            recordExtensionFailure(run, 'userAudit', 'audit:aggregate', 'safety_limit');
+            await writeManifest(runsRoot, run);
+            continue;
           }
-          return exposeTask(runsRoot, run, {
-            id: 'audit:aggregate',
-            kind: 'audit_aggregate',
-            runId,
-            request,
-            submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
-          });
         }
         return { kind: 'complete', runId };
       }
@@ -726,38 +911,48 @@ export async function nextSemanticTask({ runsRoot, runId }) {
           return { kind: 'aggregate_batch', runId, tasks };
         }
       }
-      let request = createAggregateRequest(section, context);
-      if (request.prompt.length > 30_000) {
-        const groups = aggregateGroups(section, context);
-        run.aggregateChunks ??= {};
-        run.aggregateChunks[section] ??= [];
-        const chunkIndex = run.aggregateChunks[section].length;
-        if (chunkIndex < groups.length) {
-          const carry = run.aggregateChunks[section].at(-1) ?? null;
-          const chunkRequest = section === 'at_a_glance'
-            ? createAtAGlanceChunkRequest(context, groups[chunkIndex], chunkIndex, groups.length, carry)
-            : createAggregateChunkRequest(section, context, groups[chunkIndex], chunkIndex, groups.length, carry);
-          if (chunkRequest.prompt.length > 30_000) throw new Error(`Aggregate safety limit exceeded for ${section} chunk ${chunkIndex + 1}.`);
-          return exposeTask(runsRoot, run, {
-            id: `aggregate-chunk:${section}:${chunkIndex}`,
-            kind: 'aggregate_chunk',
-            section,
-            runId,
-            request: chunkRequest,
-            submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
-          });
+      try {
+        let request = createAggregateRequest(section, context);
+        if (request.prompt.length > 30_000) {
+          const groups = aggregateGroups(section, context);
+          run.aggregateChunks ??= {};
+          run.aggregateChunks[section] ??= [];
+          const chunkIndex = run.aggregateChunks[section].length;
+          if (chunkIndex < groups.length) {
+            const carry = run.aggregateChunks[section].at(-1) ?? null;
+            const chunkRequest = section === 'at_a_glance'
+              ? createAtAGlanceChunkRequest(context, groups[chunkIndex], chunkIndex, groups.length, carry)
+              : createAggregateChunkRequest(section, context, groups[chunkIndex], chunkIndex, groups.length, carry);
+            if (chunkRequest.prompt.length > 30_000) throw new Error(`Aggregate safety limit exceeded for ${section} chunk ${chunkIndex + 1}.`);
+            return exposeTask(runsRoot, run, {
+              id: `aggregate-chunk:${section}:${chunkIndex}`,
+              kind: 'aggregate_chunk',
+              section,
+              runId,
+              request: chunkRequest,
+              submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+            });
+          }
+          request = createAggregateRequest(section, { ...context, chunkSummaries: [run.aggregateChunks[section].at(-1)] });
+          if (request.prompt.length > 30_000) throw new Error(`Aggregate safety limit exceeded for final ${section} synthesis.`);
         }
-        request = createAggregateRequest(section, { ...context, chunkSummaries: [run.aggregateChunks[section].at(-1)] });
-        if (request.prompt.length > 30_000) throw new Error(`Aggregate safety limit exceeded for final ${section} synthesis.`);
+        return exposeTask(runsRoot, run, {
+          id: `aggregate:${section}`,
+          kind: 'aggregate',
+          section,
+          runId,
+          request,
+          submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+        });
+      } catch (error) {
+        if (!/safety limit|too small|cannot fit/i.test(String(error?.message))) throw error;
+        const taskId = `aggregate:${section}`;
+        run.sectionFailures ??= {};
+        run.sectionFailures[section] = { reason: 'safety_limit', taskId };
+        recordSemanticFailure(run, taskId, 'safety_limit');
+        await writeManifest(runsRoot, run);
+        continue;
       }
-      return exposeTask(runsRoot, run, {
-        id: `aggregate:${section}`,
-        kind: 'aggregate',
-        section,
-        runId,
-        request,
-        submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
-      });
     }
     const input = await loadAnalysisInput(session.locator, session.source);
     if (input.contentHash !== session.contentHash || input.opaqueId !== session.id) {
@@ -769,25 +964,36 @@ export async function nextSemanticTask({ runsRoot, runId }) {
       continue;
     }
     if (session.analysisMode === 'chunked') {
-      const chunks = splitSessionMessages(input.messages);
       const chunkIndex = session.chunkResults.length;
-      if (chunkIndex < session.chunkCount) {
+      try {
+        if (chunkIndex < session.chunkCount) {
+          const { messages, request } = boundedSessionChunk(input, session, chunkIndex,
+            (messages, count) => createSessionChunkRequest(withLocale(input, runLocale(run)), messages, chunkIndex, count, session.chunkResults.at(-1) ?? null)
+          );
+          return exposeTask(runsRoot, run, {
+            id: `session-chunk:${session.id}:${chunkIndex}`,
+            kind: 'session_chunk',
+            runId,
+            input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages },
+            request,
+            submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
+          }, messages);
+        }
+        const request = createSessionFacetFromChunksRequest(withLocale(session, runLocale(run)), session.chunkResults.length ? [session.chunkResults.at(-1)] : []);
+        if (request.prompt.length > 30_000) throw new Error('Session final synthesis safety limit exceeded.');
         return exposeTask(runsRoot, run, {
-          id: `session-chunk:${session.id}:${chunkIndex}`,
-          kind: 'session_chunk',
+          id: `session:${session.id}`,
+          kind: 'session_facet',
           runId,
-          input: { source: input.source, opaqueId: input.opaqueId, date: input.date, messages: chunks[chunkIndex] },
-            request: createSessionChunkRequest(withLocale(input, runLocale(run)), chunks[chunkIndex], chunkIndex, chunks.length, session.chunkResults.at(-1) ?? null),
+          request,
           submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
-        }, chunks[chunkIndex]);
+        });
+      } catch (error) {
+        if (!/safety limit/i.test(error.message)) throw error;
+        const taskId = chunkIndex < session.chunkCount ? `session-chunk:${session.id}:${chunkIndex}` : `session:${session.id}`;
+        await failSemanticTaskUnlocked({ runsRoot, runId, taskId, reason: 'safety_limit' });
+        return nextSemanticTaskUnlocked({ runsRoot, runId });
       }
-      return exposeTask(runsRoot, run, {
-        id: `session:${session.id}`,
-        kind: 'session_facet',
-        runId,
-        request: createSessionFacetFromChunksRequest(withLocale(session, runLocale(run)), session.chunkResults.length ? [session.chunkResults.at(-1)] : []),
-        submissionPath: join(runDirectory(runsRoot, runId), 'submission.json')
-      });
     }
     return exposeTask(runsRoot, run, {
       id: `session:${session.id}`,
@@ -800,7 +1006,7 @@ export async function nextSemanticTask({ runsRoot, runId }) {
   }
 }
 
-export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) {
+async function ingestSemanticResultUnlocked({ runsRoot, runId, taskId, result }) {
   const run = await getSemanticRun({ runsRoot, runId });
   const batched = run.aggregateBatch?.ids?.includes(String(taskId));
   if (!batched && run.activeTask?.id !== String(taskId)) throw new Error('Semantic result does not match the task most recently exposed by semantic next.');
@@ -819,7 +1025,7 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     const priorIds = run.aggregateChunks?.[section]?.at(-1)?.evidenceSessionIds ?? [];
     const currentIds = section === 'at_a_glance'
       ? [...evidenceIdsIn(Object.fromEntries(groups[index].map((fragment) => [fragment.section, context.sections[fragment.section]])))]
-      : groups[index].map((session) => session.id);
+      : groups[index].map((session) => session.id).filter(Boolean);
     const chunk = validateAggregateChunkResult(result, evidenceContext(context, [...priorIds, ...currentIds]));
     run.aggregateChunks[section].push(chunk);
     run.activeTask = null;
@@ -833,9 +1039,8 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     if (!session || session.status !== 'pending' || session.analysisMode !== 'chunked' || index !== session.chunkResults.length || index >= session.chunkCount) {
       throw new Error('Semantic chunk task is missing or already complete.');
     }
-    const indexes = session.chunkMessageIndexes[index];
-    const priorIndexes = (session.chunkResults.at(-1)?.evidence ?? []).flatMap((item) => item.messageIndexes ?? []);
-    const allowedIndexes = [...new Set([...indexes, ...priorIndexes])];
+    const messages = run.activeTask.messages;
+    if (!Array.isArray(messages)) throw new Error('The pending semantic task has no frozen text; fail it and prepare a fresh run.');
     const chunkInput = {
       source: session.source,
       date: session.date,
@@ -843,7 +1048,8 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
       sessionId: session.sessionId,
       projectPath: session.projectPath,
       projectLabel: session.projectLabel,
-      messages: allowedIndexes.map((messageIndex) => ({ index: messageIndex }))
+      messages,
+      derivedEvidence: session.chunkResults.at(-1)?.evidence ?? []
     };
     const chunk = validateSessionChunkResult(result, chunkInput);
     session.chunkResults.push(chunk);
@@ -888,23 +1094,14 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     if (input.contentHash !== session.contentHash || input.opaqueId !== session.id) {
       throw new Error('Audit session source changed after prepare.');
     }
-    const indexes = state.chunkMessageIndexes[index];
-    const priorIndexes = (state.chunkResults.at(-1)?.findings ?? []).flatMap((finding) =>
-      (finding.locators ?? []).flatMap((locator) => locator.messageIndexes ?? [])
-    );
-    const allowedIndexes = [...new Set([...indexes, ...priorIndexes])];
-    const textByIndex = new Map(
-      input.messages
-        .filter((message) => message?.role === 'user' && typeof message.text === 'string')
-        .map((message) => [message.index, message.text])
-    );
+    const chunkMessages = sessionChunkMessages(input.messages, state, index, true);
+    const allowedMessages = [...chunkMessages, ...auditCarryMessages(input, state.chunkResults.at(-1))];
     const chunk = validateSessionAuditChunkResult(result, {
       source: input.source,
       opaqueId: input.opaqueId,
       sessionId: input.sessionId,
       date: input.date,
-      userTexts: allowedIndexes.map((messageIndex) => textByIndex.get(messageIndex)).filter(Boolean),
-      messages: allowedIndexes.map((messageIndex) => ({ index: messageIndex }))
+      messages: allowedMessages
     });
     state.chunkResults.push(chunk);
     run.activeTask = null;
@@ -929,17 +1126,12 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     }
     let auditInput = input;
     if (state?.chunkCount) {
-      const allowedIndexes = [...new Set(
-        (state.chunkResults.at(-1)?.findings ?? []).flatMap((finding) =>
-          (finding.locators ?? []).flatMap((locator) => locator.messageIndexes ?? [])
-        )
-      )];
       auditInput = {
         ...input,
         userTexts: input.messages.filter((message) => message?.role === 'user').map((message) => message.text),
-        messages: allowedIndexes.length
-          ? allowedIndexes.map((index) => ({ index }))
-          : input.messages.filter((message) => message?.role === 'user').map((message) => ({ index: message.index }))
+        userMessages: input.messages.filter((message) => message?.role === 'user'),
+        messages: auditCarryMessages(input, state.chunkResults.at(-1)),
+        assessmentContext: auditCarryAssessmentContext(state.chunkResults.at(-1))
       };
     }
     const audit = validateSessionAuditResult(result, auditInput);
@@ -954,18 +1146,12 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     if (!auditAggregatePending(run)) throw new Error('Audit aggregate chunk task is missing, out of order, or already complete.');
     const index = Number(String(taskId).slice('audit:aggregate-chunk:'.length));
     const context = auditAggregateContext(run);
-    const groups = splitAuditSessions(context.sessions);
     const extension = ensureUserAuditExtension(run);
-    if (!Number.isInteger(index) || index !== extension.aggregateChunks.length || index >= groups.length) {
+    const batch = auditAggregateBatch(run, context, index);
+    if (!Number.isInteger(index) || index !== extension.aggregateChunks.length || !batch) {
       throw new Error('Audit aggregate chunk task is out of order.');
     }
-    const priorSessions = extension.aggregateChunks.at(-1)?.findings
-      ?.flatMap((finding) => (finding.locators ?? []).map((locator) => locator.sessionId))
-      ?? [];
-    const currentIds = new Set([...priorSessions, ...groups[index].map((session) => session.id)]);
-    const chunkContext = {
-      sessions: context.sessions.filter((session) => currentIds.has(session.id) || currentIds.has(session.sessionId))
-    };
+    const chunkContext = auditAggregateEvidenceContext(context, batch.sessions, extension.aggregateChunks.at(-1));
     const chunk = validateAuditAggregateChunkResult(result, chunkContext);
     extension.aggregateChunks.push(chunk);
     run.activeTask = null;
@@ -978,10 +1164,9 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     const direct = createAuditAggregateRequest(context);
     let validationContext = context;
     if (direct.prompt.length > 30_000) {
-      const groups = splitAuditSessions(context.sessions);
       const extension = ensureUserAuditExtension(run);
-      if (extension.aggregateChunks.length < groups.length) throw new Error('Audit aggregate chunks are incomplete.');
-      validationContext = context;
+      if (!auditAggregateBatchesComplete(run, context)) throw new Error('Audit aggregate chunks are incomplete.');
+      validationContext = auditAggregateEvidenceContext(context, [], extension.aggregateChunks.at(-1));
     }
     const aggregate = validateAuditAggregateResult(result, validationContext);
     const extension = ensureUserAuditExtension(run);
@@ -997,9 +1182,8 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
   if (session.analysisMode === 'chunked' && session.chunkResults.length !== session.chunkCount) {
     throw new Error('All session chunks must complete before the final session facet.');
   }
-  const supportedIndexes = session.analysisMode === 'chunked'
-    ? [...new Set((session.chunkResults.at(-1)?.evidence ?? []).flatMap((item) => item.messageIndexes ?? []))]
-    : Array.from({ length: session.messageCount }, (_, index) => index + 1);
+  const messages = session.analysisMode === 'chunked' ? [] : run.activeTask.messages;
+  if (!Array.isArray(messages)) throw new Error('The pending semantic task has no frozen text; fail it and prepare a fresh run.');
   const frozenInput = {
     source: session.source,
     date: session.date,
@@ -1007,7 +1191,8 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
     sessionId: session.sessionId,
     projectPath: session.projectPath,
     projectLabel: session.projectLabel,
-    messages: supportedIndexes.map((index) => ({ index }))
+    messages,
+    derivedEvidence: session.analysisMode === 'chunked' ? session.chunkResults.at(-1)?.evidence ?? [] : []
   };
   const facet = validateSessionFacet(result, frozenInput);
   session.status = isWarmupFacet(facet) ? 'excluded' : 'complete';
@@ -1020,7 +1205,7 @@ export async function ingestSemanticResult({ runsRoot, runId, taskId, result }) 
   return facet;
 }
 
-export async function failSemanticTask({ runsRoot, runId, taskId, reason = 'analyzer_failure' }) {
+async function failSemanticTaskUnlocked({ runsRoot, runId, taskId, reason = 'analyzer_failure' }) {
   const allowed = new Set(['analyzer_failure', 'invalid_analyzer_response', 'safety_limit', 'source_changed']);
   if (!allowed.has(reason)) throw new Error(`Unsupported semantic failure reason: ${reason}.`);
   await semanticSubmissionForTask({ runsRoot, runId, taskId });
@@ -1059,7 +1244,7 @@ export async function failSemanticTask({ runsRoot, runId, taskId, reason = 'anal
   return { taskId: id, reason, status: 'failed' };
 }
 
-export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) {
+async function finalizeSemanticRunUnlocked({ runsRoot, runId, outputDirectory }) {
   const run = await getSemanticRun({ runsRoot, runId });
   const missing = AGGREGATE_TASKS.filter((section) => run.sections[section] === undefined);
   const unresolved = missing.filter((section) => run.sectionFailures?.[section] === undefined);
@@ -1138,22 +1323,14 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
   const report = summarizeSessions(sessions, {
     days: run.request.days === 'all' ? Infinity : run.request.days,
     requestedRange: run.request.start && run.request.end ? { start: run.request.start, end: run.request.end } : null,
+    selectedAt: run.request.selectedAt ?? null,
     sourcesScanned: run.diagnostics,
+    projectFilter: run.projectFilter,
     semantic,
     extensions,
     eligibility: run.eligibility,
     locale: runLocale(run)
   });
-  // Attribution bridge: inject deterministic efficiency findings alongside LLM audit findings
-  if (report.extensions?.userAudit?.status === 'complete' && report.extensions.userAudit.aggregate) {
-    const effFindings = efficiencyToFindings(report.efficiency, report.semantic?.sessions ?? []);
-    if (effFindings.length > 0) {
-      report.extensions.userAudit.aggregate.remaining = [
-        ...(report.extensions.userAudit.aggregate.remaining ?? []),
-        ...effFindings
-      ];
-    }
-  }
   const files = await writeReport(report, outputDirectory);
   run.status = run.failures?.length || run.extensionFailures?.userAudit ? 'partial' : 'complete';
   run.completedAt = new Date().toISOString();
@@ -1161,6 +1338,66 @@ export async function finalizeSemanticRun({ runsRoot, runId, outputDirectory }) 
   await writeManifest(runsRoot, run);
   await cleanTransientRunFiles(runsRoot, runId);
   return { report, files };
+}
+
+export async function withSemanticRunTransaction({ runsRoot, runId }, callback) {
+  const context = { runsRoot, runId };
+  try {
+    return await withRunLock(runDirectory(runsRoot, runId), async () => {
+      let active = true;
+      let pending = null;
+      const invoke = (operation, arguments_ = {}) => {
+        if (!active) throw new Error('Semantic run transaction is already closed.');
+        if (pending) throw new Error('A semantic transaction operation is still running; await it before starting another.');
+        const result = operation({ ...arguments_, ...context });
+        const completion = result.finally(() => { if (pending === completion) pending = null; });
+        pending = completion;
+        return completion;
+      };
+      const transaction = Object.freeze({
+        getRun: () => invoke(getSemanticRun),
+        next: () => invoke(nextSemanticTaskUnlocked),
+        submissionForTask: (options) => invoke(semanticSubmissionForTask, options),
+        ingest: (options) => invoke(ingestSemanticResultUnlocked, options),
+        fail: (options) => invoke(failSemanticTaskUnlocked, options),
+        finalize: (options) => invoke(finalizeSemanticRunUnlocked, options)
+      });
+      try {
+        return await callback(transaction);
+      } finally {
+        active = false;
+        // Even an accidentally unawaited transaction method must finish before
+        // another process may acquire the run and read its checkpoint.
+        if (pending) await pending.catch(() => {});
+      }
+    });
+  } catch (error) {
+    if (error instanceof DirectoryLockCleanupError) {
+      const value = error.result;
+      if (value && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) {
+        return { ...value, lockCleanupWarning: error.lockCleanupWarning };
+      }
+    }
+    // Primitive or non-record callbacks retain their original result inside the
+    // explicit operationCompleted error instead of silently changing its type.
+    throw error;
+  }
+}
+
+export function nextSemanticTask(options) {
+  return withSemanticRunTransaction(options, (transaction) => transaction.next());
+}
+
+export function ingestSemanticResult(options) {
+  return withSemanticRunTransaction(options, (transaction) => transaction.ingest(options));
+}
+
+export function failSemanticTask(options) {
+  return withSemanticRunTransaction(options, (transaction) => transaction.fail(options));
+}
+
+export function finalizeSemanticRun(options) {
+  return withSemanticRunTransaction(options, (transaction) => transaction.finalize(options));
 }
 
 export { PROMPT_VERSION, RUN_SCHEMA };

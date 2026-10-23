@@ -2,6 +2,8 @@ import { createReadStream } from 'node:fs';
 import { lstat, readFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { basename, extname } from 'node:path';
+import { toolEventKind, toolExecutionStatus } from './tool-events.mjs';
+import { observeProjectMetadata } from './project-metadata.mjs';
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const SHORT_TURN_THRESHOLD = 40;
@@ -30,18 +32,20 @@ function normaliseDate(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function embeddedContentTimestamp(record) {
-  if (!isObject(record)) return null;
+function embeddedContentTimestamp(record, source) {
+  if (source !== 'cursor' || !isObject(record)) return null;
   const payload = isObject(record.payload) ? record.payload : null;
   const message = isObject(record.message) ? record.message : null;
   const item = record.type === 'response_item' && payload ? payload : message ?? payload ?? record;
+  const role = String(item.role ?? record.role ?? '').toLowerCase();
+  if (role ? role !== 'user' : record.type !== 'user') return null;
   const text = contentText(isObject(item) ? item.content : null);
-  const match = typeof text === 'string' ? text.match(/<timestamp>\s*([^<]+?)\s*<\/timestamp>/i) : null;
+  const match = typeof text === 'string' ? text.match(/^<timestamp>\s*([^<]+?)\s*<\/timestamp>(?:[ \t]*\r?\n|[ \t]*$)/i) : null;
   return match ? normaliseDate(match[1].trim()) : null;
 }
 
-/** Prefer explicit JSON clocks; fall back to Cursor-style embedded <timestamp> tags. */
-export function recordTimestamp(record) {
+/** Prefer explicit JSON clocks; only Cursor user transport prefixes supply a fallback. */
+export function recordTimestamp(record, source) {
   if (!isObject(record)) return null;
   const candidates = [
     record.timestamp,
@@ -51,7 +55,7 @@ export function recordTimestamp(record) {
     record.payload?.timestamp,
     record.payload?.createdAt,
     record.message?.timestamp,
-    embeddedContentTimestamp(record)
+    embeddedContentTimestamp(record, source)
   ];
   for (const candidate of candidates) {
     const date = normaliseDate(candidate);
@@ -60,8 +64,8 @@ export function recordTimestamp(record) {
   return null;
 }
 
-function firstDate(record) {
-  return recordTimestamp(record);
+function firstDate(record, source) {
+  return recordTimestamp(record, source);
 }
 
 function firstString(...candidates) {
@@ -77,6 +81,57 @@ function addDate(session, value) {
 function increment(object, key, amount = 1) {
   if (!key) return;
   object[key] = (object[key] ?? 0) + amount;
+}
+
+const TOKEN_BUCKETS = ['input', 'output', 'cacheRead', 'cacheWrite'];
+
+function emptyTokenUsage(source) {
+  return {
+    scope: source === 'pi' ? 'active_branch' : 'selected_transcript',
+    records: { expected: 0, withUsage: 0 },
+    ...Object.fromEntries(TOKEN_BUCKETS.map((bucket) => [bucket, { observed: 0, reportedRecords: 0, missingRecords: 0 }])),
+    totalTokens: null,
+    coverage: 'unavailable'
+  };
+}
+
+function reportedTokenNumber(value, allowNumericString = false) {
+  if (allowNumericString && typeof value === 'string' && value.trim()) value = Number(value);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  return value;
+}
+
+function observeUsage(session, record, { usage, isAssistant, isLifecycleEvent }) {
+  const piUsageRecord = session.source === 'pi' && ['usage', 'compaction', 'branch_summary'].includes(record.type);
+  if (!isAssistant && !piUsageRecord && !isObject(usage)) return;
+  // Preserve existing direct usage records, without interpreting cumulative
+  // event telemetry that has no direct usage object.
+  if (isLifecycleEvent && !isObject(usage)) return;
+  const tracked = session.tokenUsage;
+  tracked.records.expected += 1;
+  if (isObject(usage)) tracked.records.withUsage += 1;
+  const values = {
+    input: session.source === 'pi' ? usage?.input ?? usage?.input_tokens ?? usage?.inputTokens : usage?.input_tokens ?? usage?.inputTokens,
+    output: session.source === 'pi' ? usage?.output ?? usage?.output_tokens ?? usage?.outputTokens : usage?.output_tokens ?? usage?.outputTokens,
+    cacheRead: session.source === 'pi' ? usage?.cacheRead : usage?.cache_read_input_tokens,
+    cacheWrite: session.source === 'pi' ? usage?.cacheWrite : usage?.cache_creation_input_tokens
+  };
+  for (const bucket of TOKEN_BUCKETS) {
+    const value = reportedTokenNumber(values[bucket], session.source !== 'pi');
+    if (value === null) tracked[bucket].missingRecords += 1;
+    else {
+      tracked[bucket].observed += value;
+      tracked[bucket].reportedRecords += 1;
+    }
+  }
+  const complete = TOKEN_BUCKETS.every((bucket) => tracked[bucket].missingRecords === 0);
+  const anyReported = TOKEN_BUCKETS.some((bucket) => tracked[bucket].reportedRecords > 0);
+  tracked.coverage = complete ? 'complete' : anyReported ? 'partial' : 'unavailable';
+  // Pi's four native buckets are disjoint. reasoning is part of output and
+  // cacheWrite1h is part of cacheWrite; totalTokens must not add either again.
+  tracked.totalTokens = complete ? TOKEN_BUCKETS.reduce((total, bucket) => total + tracked[bucket].observed, 0) : null;
+  session.inputTokens = tracked.input.observed;
+  session.outputTokens = tracked.output.observed;
 }
 
 const LANGUAGE_BY_EXTENSION = new Map([
@@ -181,12 +236,14 @@ function countContentTools(content, session) {
   for (const block of content) {
     if (!isObject(block)) continue;
     const type = String(block.type ?? '').toLowerCase();
-    if (type === 'tool_result' && (block.is_error || block.error)) {
-      session.toolErrors += 1;
-      increment(session.toolErrorCategories, classifyToolError(toolResultText(block)));
+    if (toolEventKind(type) === 'result') {
+      if (toolExecutionStatus(block) === 'failed') {
+        session.toolErrors += 1;
+        increment(session.toolErrorCategories, classifyToolError(toolResultText(block)));
+      }
       continue;
     }
-    if (!/(tool_use|tool_call|toolcall|function_call)/.test(type)) continue;
+    if (toolEventKind(type) !== 'call') continue;
     observeTool(session, firstString(block.name, block.tool_name, block.function?.name, 'unknown'), block.input ?? block.arguments ?? block.function?.arguments ?? {});
     if (block.is_error || block.error) session.toolErrors += 1;
   }
@@ -194,7 +251,7 @@ function countContentTools(content, session) {
 
 function observeRecord(session, record) {
   if (!isObject(record)) return false;
-  addDate(session, firstDate(record));
+  addDate(session, firstDate(record, session.source));
 
   const payload = isObject(record.payload) ? record.payload : null;
   const message = isObject(record.message) ? record.message : null;
@@ -209,7 +266,8 @@ function observeRecord(session, record) {
     payload?.sessionId,
     payload?.session_id,
     recordType === 'session_meta' ? payload?.session_id : null,
-    recordType === 'session_meta' ? payload?.id : null
+    recordType === 'session_meta' ? payload?.id : null,
+    recordType === 'session' ? record.id : null
   );
   if (id && session.id === session._fallbackId) session.id = id;
   else if (id && id !== session.id) {
@@ -219,17 +277,7 @@ function observeRecord(session, record) {
     session.partialReason ??= 'multi_session_bundle';
   }
 
-  const project = firstString(
-    record.cwd,
-    record.projectPath,
-    record.project_path,
-    record.workspace,
-    payload?.cwd,
-    payload?.projectPath,
-    payload?.project_path,
-    item.cwd
-  );
-  if (project) session.project = project;
+  observeProjectMetadata(session, record);
   if (record.parentId) {
     session.parentCounts[record.parentId] = (session.parentCounts[record.parentId] ?? 0) + 1;
     if (session.parentCounts[record.parentId] > 1) session.hasBranches = true;
@@ -241,7 +289,7 @@ function observeRecord(session, record) {
   const userText = contentText(item.content);
   const isUser = !isLifecycleEvent && Boolean(userText.trim()) && (role === 'user' || recordType === 'user' || itemType === 'user_message');
   const isAssistant = !isLifecycleEvent && (role === 'assistant' || recordType === 'assistant' || itemType === 'assistant_message');
-  const timestamp = firstDate(record);
+  const timestamp = firstDate(record, session.source);
   if (isUser) {
     session.userMessages += 1;
     if (userText.length > 0 && userText.length <= SHORT_TURN_THRESHOLD) session.shortUserTurns += 1;
@@ -261,26 +309,26 @@ function observeRecord(session, record) {
     if (timestamp) session._lastAssistantTimestamp = timestamp;
   }
 
-  const isTool = /(tool_use|tool_call|toolcall|function_call|custom_tool_call|tool_search_call|web_search_call)/.test(itemType) || /^(tool_use|tool_call|toolcall|function_call|custom_tool_call|tool_search_call|web_search_call)$/.test(recordType);
+  const isToolResult = !isLifecycleEvent && (role === 'toolresult' || toolEventKind(itemType) === 'result' || toolEventKind(recordType) === 'result');
+  const isTool = !isLifecycleEvent && !isToolResult && (toolEventKind(itemType) === 'call' || toolEventKind(recordType) === 'call');
   if (isTool) {
     observeTool(session, firstString(item.name, item.tool_name, item.function?.name, record.name, 'unknown'), item.input ?? item.arguments ?? item.function?.arguments ?? {});
-  } else {
+  } else if (!isLifecycleEvent) {
     countContentTools(item.content, session);
   }
 
   const status = String(item.status ?? record.status ?? '').toLowerCase();
   const failed = Boolean(item.is_error || item.error || record.error) || ['error', 'failed', 'denied'].includes(status);
-  if (failed && isTool) session.toolErrors += 1;
+  if (isToolResult && toolExecutionStatus(item) === 'failed') session.toolErrors += 1;
+  else if (failed && isTool) session.toolErrors += 1;
   else if (failed && recordType === 'turn_ended') session.turnFailures += 1;
+  if (session.source === 'pi' && isAssistant && item.stopReason === 'error') session.turnFailures += 1;
 
   const usage = item.usage ?? record.usage ?? payload?.usage;
-  if (isObject(usage)) {
-    session.inputTokens += Number(usage.input_tokens ?? usage.inputTokens ?? 0) || 0;
-    session.outputTokens += Number(usage.output_tokens ?? usage.outputTokens ?? 0) || 0;
-  }
+  observeUsage(session, record, { usage, isAssistant, isLifecycleEvent });
   increment(session.providers, firstString(item.provider, payload?.provider, item.model?.provider, record.provider));
   increment(session.models, firstString(item.model, payload?.model, item.model?.id, record.model));
-  return isUser || isAssistant || isTool || [
+  return isUser || isAssistant || isTool || isToolResult || (session.source === 'pi' && recordType === 'usage') || [
     'session',
     'session_meta',
     'response_item',
@@ -301,6 +349,7 @@ function emptySession(filePath, source) {
     _fallbackId: fallbackId,
     source,
     project: null,
+    projectPaths: [],
     startedAt: null,
     endedAt: null,
     userMessages: 0,
@@ -310,6 +359,7 @@ function emptySession(filePath, source) {
     turnFailures: 0,
     inputTokens: 0,
     outputTokens: 0,
+    tokenUsage: emptyTokenUsage(source),
     toolNames: {},
     shortUserTurns: 0,
     correctionTurns: 0,
@@ -379,6 +429,34 @@ function importSnapshotSession(document, filePath, source) {
   session.partialReason = typeof cached.partialReason === 'string' ? cached.partialReason.slice(0, 128) : null;
   session.hasBranches = Boolean(cached.hasBranches);
   session.recognizedRecords = 1;
+  // Old snapshots contain only legacy numeric subtotals. They cannot establish
+  // whether missing fields were measured as zero, so never invent coverage.
+  delete session.tokenUsage;
+  const tracked = cached.tokenUsage;
+  if (isObject(tracked) && ['active_branch', 'selected_transcript'].includes(tracked.scope)
+      && Number.isInteger(tracked.records?.expected) && tracked.records.expected >= 0
+      && Number.isInteger(tracked.records?.withUsage) && tracked.records.withUsage >= 0 && tracked.records.withUsage <= tracked.records.expected
+      && TOKEN_BUCKETS.every((bucket) => isObject(tracked[bucket])
+        && reportedTokenNumber(tracked[bucket].observed) !== null
+        && Number.isInteger(tracked[bucket].reportedRecords) && tracked[bucket].reportedRecords >= 0
+        && tracked[bucket].reportedRecords <= tracked.records.withUsage
+        && (tracked[bucket].reportedRecords > 0 || tracked[bucket].observed === 0)
+        && Number.isInteger(tracked[bucket].missingRecords) && tracked[bucket].missingRecords >= 0
+        && tracked[bucket].reportedRecords + tracked[bucket].missingRecords === tracked.records.expected)) {
+    const complete = tracked.records.expected > 0 && TOKEN_BUCKETS.every((bucket) => tracked[bucket].missingRecords === 0);
+    const anyReported = TOKEN_BUCKETS.some((bucket) => tracked[bucket].reportedRecords > 0);
+    session.tokenUsage = {
+      scope: tracked.scope,
+      records: { expected: tracked.records.expected, withUsage: tracked.records.withUsage },
+      ...Object.fromEntries(TOKEN_BUCKETS.map((bucket) => [bucket, {
+        observed: tracked[bucket].observed, reportedRecords: tracked[bucket].reportedRecords, missingRecords: tracked[bucket].missingRecords
+      }])),
+      totalTokens: complete ? TOKEN_BUCKETS.reduce((total, bucket) => total + tracked[bucket].observed, 0) : null,
+      coverage: complete ? 'complete' : anyReported ? 'partial' : 'unavailable'
+    };
+    session.inputTokens = session.tokenUsage.input.observed;
+    session.outputTokens = session.tokenUsage.output.observed;
+  }
   return session;
 }
 
@@ -399,19 +477,38 @@ export function claudeTopologyNode(record) {
   return {
     uuid,
     parentUuid: firstString(record.parentUuid),
-    timestamp: firstDate(record),
+    timestamp: firstDate(record, 'claude'),
     isUser
   };
 }
 
-function observeLine(session, line, { topology = null, selectedUuids = null } = {}) {
+export function piTopologyNode(record) {
+  if (!isObject(record) || record.type === 'session') return null;
+  const uuid = firstString(record.id);
+  return uuid ? { uuid, parentUuid: firstString(record.parentId) } : null;
+}
+
+// Pi reopens a journal at its last entry and follows parentId back to root.
+// Sibling branches remain in the append-only file but are not that dialogue.
+export function selectPiBranchIds(nodes) {
+  if (nodes.size === 0) return null;
+  const selected = new Set();
+  let id = [...nodes.keys()].at(-1);
+  while (id && nodes.has(id) && !selected.has(id)) {
+    selected.add(id);
+    id = nodes.get(id).parentUuid;
+  }
+  return selected;
+}
+
+function observeLine(session, line, { topology = null, selectedUuids = null, topologySource = 'claude', selectedIds = null } = {}) {
   if (!line.trim()) return;
   session.recordsRead += 1;
   try {
     const record = JSON.parse(line);
-    const topologyNode = topology ? claudeTopologyNode(record) : null;
+    const topologyNode = topology ? (topologySource === 'pi' ? piTopologyNode(record) : claudeTopologyNode(record)) : null;
     if (topologyNode) topology.set(topologyNode.uuid, topologyNode);
-    if ((!selectedUuids || selectedUuids.has(firstString(record.uuid))) && observeRecord(session, record)) {
+    if ((!selectedUuids || selectedUuids.has(firstString(record.uuid))) && (!selectedIds || record.type === 'session' || selectedIds.has(firstString(record.id))) && observeRecord(session, record)) {
       session.recognizedRecords += 1;
     }
   } catch {
@@ -469,7 +566,7 @@ export function selectClaudeLeafUuids(nodes) {
   return selected ? new Set(selected.uuids) : null;
 }
 
-async function parseJsonlPass(filePath, source, { fileSize, maxBytes, maxRecords, maxRecordBytes }, { topology = null, selectedUuids = null } = {}) {
+async function parseJsonlPass(filePath, source, { fileSize, maxBytes, maxRecords, maxRecordBytes }, { topology = null, selectedUuids = null, selectedIds = null, topologySource = 'claude' } = {}) {
   const session = emptySession(filePath, source);
   const bytesToRead = Math.min(fileSize, maxBytes);
   if (fileSize > maxBytes) {
@@ -486,31 +583,43 @@ async function parseJsonlPass(filePath, source, { fileSize, maxBytes, maxRecords
       const line = pending.slice(0, newline).replace(/\r$/, '');
       pending = pending.slice(newline + 1);
       if (discardingOversizeLine || Buffer.byteLength(line) > maxRecordBytes) {
-        session.partial = true;
-        session.partialReason ??= 'record_limit';
+        if (line.trim()) {
+          session.partial = true;
+          session.partialReason ??= 'record_limit';
+        }
         discardingOversizeLine = false;
         continue;
       }
-      observeLine(session, line, { topology, selectedUuids });
-      if (session.recordsRead >= maxRecords) {
+      // Reaching the budget is still a complete read when only EOF or blank
+      // lines follow. Mark it partial only after seeing another logical record.
+      if (line.trim() && session.recordsRead >= maxRecords) {
         session.partial = true;
         session.partialReason = 'event_limit';
         stream.destroy();
         break;
       }
+      observeLine(session, line, { topology, selectedUuids, selectedIds, topologySource });
     }
-    if (pending.length > maxRecordBytes) {
+    if (discardingOversizeLine || Buffer.byteLength(pending) > maxRecordBytes) {
       // Do not let a huge tool output without a newline become an unbounded
-      // readline buffer. Discard until the next record boundary.
+      // buffer. An oversized blank prefix is harmless unless this same logical
+      // line eventually contains nonblank content; keep that boundary state.
+      if (pending.trim()) {
+        session.partial = true;
+        session.partialReason ??= 'record_limit';
+      }
       pending = '';
       discardingOversizeLine = true;
-      session.partial = true;
-      session.partialReason ??= 'record_limit';
     }
     if (session.partialReason === 'event_limit') break;
   }
   if (!session.partial && pending.trim()) {
-    if (Buffer.byteLength(pending) <= maxRecordBytes) observeLine(session, pending, { topology, selectedUuids });
+    if (Buffer.byteLength(pending) <= maxRecordBytes) {
+      if (session.recordsRead >= maxRecords) {
+        session.partial = true;
+        session.partialReason = 'event_limit';
+      } else observeLine(session, pending, { topology, selectedUuids, selectedIds, topologySource });
+    }
     else {
       session.partial = true;
       session.partialReason = 'record_limit';
@@ -520,6 +629,15 @@ async function parseJsonlPass(filePath, source, { fileSize, maxBytes, maxRecords
 }
 
 async function parseJsonl(filePath, source, limits) {
+  if (source === 'pi') {
+    const topology = new Map();
+    const aggregate = await parseJsonlPass(filePath, source, limits, { topology, topologySource: 'pi' });
+    const selectedIds = selectPiBranchIds(topology);
+    if (!selectedIds) return aggregate;
+    const selected = await parseJsonlPass(filePath, source, limits, { selectedIds });
+    for (const field of ['recordsRead', 'recognizedRecords', 'malformedRecords', 'partial', 'partialReason', 'hasBranches']) selected[field] = aggregate[field];
+    return selected;
+  }
   if (source !== 'claude') return parseJsonlPass(filePath, source, limits);
   const topology = new Map();
   const aggregate = await parseJsonlPass(filePath, source, limits, { topology });
@@ -609,6 +727,10 @@ export async function parseSessionFile(file, source, {
   session.startedAt ??= fallback;
   session.endedAt ??= fallback;
   session.filesModified ||= session._modifiedFiles.size;
+  if (session.partial && session.tokenUsage) {
+    session.tokenUsage.totalTokens = null;
+    if (session.tokenUsage.coverage === 'complete') session.tokenUsage.coverage = 'partial';
+  }
   const boundedBeforeRecognition = session.partial && ['byte_limit', 'record_limit', 'event_limit'].includes(session.partialReason);
   if (session.recognizedRecords === 0 && !boundedBeforeRecognition) {
     throw new TranscriptParseError(`${basename(filePath)} did not contain a recognized session record.`);
@@ -617,5 +739,6 @@ export async function parseSessionFile(file, source, {
   delete session.parentCounts;
   delete session._modifiedFiles;
   delete session._lastAssistantTimestamp;
+  delete session._projectPathsSeen;
   return session;
 }

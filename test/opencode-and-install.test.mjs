@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { collectOpenCodeSessions, normaliseOpenCodeExport, openCodeAnalysisInput } from '../src/opencode.mjs';
+import { collectOpenCodeSessions, exportOpenCodeSession, normaliseOpenCodeExport, openCodeAnalysisInput } from '../src/opencode.mjs';
+import { splitSessionMessages } from '../src/protocol.mjs';
 import { AGENTS, installIntegration, integrationPath, renderIntegration } from '../src/integrations.mjs';
 import { summarizeSessions } from '../src/analyze.mjs';
 
@@ -31,7 +32,11 @@ test('normalises an OpenCode export without retaining transcript content', () =>
   const report = summarizeSessions([session]);
   assert.equal(report.totals.inputTokens, 12);
   assert.equal(report.totals.outputTokens, 34);
-  assert.equal(JSON.stringify(report).includes('ses-secret'), false);
+  // Session identity makes metadata flags traceable; transcript and tool
+  // payloads still must not become part of a metadata-only report.
+  assert.equal(report.efficiency.sessions[0].sessionId, 'ses-secret');
+  assert.equal(JSON.stringify(report).includes('do not retain me'), false);
+  assert.equal(JSON.stringify(report).includes('shell-danger-raw'), false);
   assert.equal(JSON.stringify(report).includes('/private/work/insight'), false);
 });
 
@@ -50,7 +55,7 @@ test('uses the official OpenCode CLI contract and declares root-session coverage
   assert.deepEqual(result.sessions[0].analysisLocator, { kind: 'opencode', sessionId: 'ses-1', cwd: process.cwd() });
 });
 
-test('builds bounded OpenCode semantic input without tool payloads', () => {
+test('builds OpenCode semantic input without tool payloads', () => {
   const input = openCodeAnalysisInput({
     info: { id: 'ses-semantic', directory: '/work/demo', time: { created: 1_783_000_000_000, updated: 1_783_000_120_000 } },
     messages: [
@@ -63,10 +68,39 @@ test('builds bounded OpenCode semantic input without tool payloads', () => {
   assert.deepEqual(input.messages, [
     { index: 1, role: 'user', text: 'Explain this failure' },
     { index: 2, role: 'assistant', text: 'I found it' },
-    { index: 3, role: 'tool', text: 'bash' }
+    { index: 3, role: 'tool', text: 'bash', tool: { kind: 'call', name: 'bash', status: 'unknown' } }
   ]);
   assert.equal(JSON.stringify(input).includes('private-command'), false);
   assert.equal(JSON.stringify(input).includes('private-output'), false);
+});
+
+test('OpenCode exports preserve late constraints and failed outcomes through bounded message chunks', async () => {
+  const userText = `${'Context 😀 '.repeat(8_000)}Do not deploy; acceptance requires passing the regression test.`;
+  const assistantText = `${'Investigation. '.repeat(4_000)}The regression failed; the goal is not achieved.`;
+  const { input } = await exportOpenCodeSession({
+    sessionId: 'ses-long',
+    runner: async () => JSON.stringify({
+      info: { id: 'ses-long' },
+      messages: [
+        { info: { role: 'user' }, parts: [{ type: 'text', text: userText }] },
+        { info: { role: 'assistant' }, parts: [
+          { type: 'text', text: assistantText },
+          { type: 'tool', tool: 'bash', state: { input: { command: 'private-command' }, output: 'private-output' } }
+        ] }
+      ]
+    })
+  });
+  assert.equal(input.messages[0].text, userText);
+  assert.equal(input.messages[1].text, assistantText);
+  assert.equal(input.userMessageCount, 1);
+  const chunks = splitSessionMessages(input.messages);
+  assert.ok(chunks.length > 2);
+  assert.ok(chunks.every((chunk) => JSON.stringify(chunk).length <= 25_000));
+  for (const message of input.messages) {
+    assert.equal(chunks.flat().filter((part) => part.index === message.index).map((part) => part.text).join(''), message.text);
+  }
+  assert.equal(JSON.stringify(chunks).includes('private-command'), false);
+  assert.equal(JSON.stringify(chunks).includes('private-output'), false);
 });
 
 test('installs a real Pi slash-command extension and protects existing files', async () => {

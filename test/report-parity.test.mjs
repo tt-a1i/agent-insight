@@ -92,7 +92,7 @@ test('custom semantic date ranges remain explicit in report coverage', () => {
     requestedRange: { start: '2026-06-01', end: '2026-06-30' }
   });
   assert.deepEqual(report.coverage.requestedRange, { start: '2026-06-01', end: '2026-06-30' });
-  assert.match(renderMarkdown(report), /2026-06-01 to 2026-06-30 requested range/);
+  assert.match(renderMarkdown(report), /2026\\-06\\-01 至 2026\\-06\\-30（UTC，起止日期整日）/);
   assert.doesNotMatch(renderMarkdown(report), /null-day/);
 });
 

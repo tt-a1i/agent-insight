@@ -7,6 +7,8 @@ import test from 'node:test';
 import { main } from '../src/cli.mjs';
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url);
+// Keep the rolling window anchored to the fixture, independent of the test date.
+const fixtureNow = Date.parse('2026-07-04T00:00:00.000Z');
 
 test('insights CLI asks on every invocation and prepares a current-host semantic run', async () => {
   const home = await mkdtemp(join(tmpdir(), 'agent-insight-cli-semantic-'));
@@ -17,6 +19,7 @@ test('insights CLI asks on every invocation and prepares a current-host semantic
   const result = await main(['insights', '--host', 'claude'], {
     cwd: home,
     home,
+    now: fixtureNow,
     ask: async () => answers.shift(),
     quiet: true
   });
@@ -38,6 +41,7 @@ test('prepare and semantic commands form a host-mediated analysis loop', async (
   const prepared = await main(['prepare', '--host', 'claude', '--source', 'claude', '--days', '30'], {
     cwd: home,
     home,
+    now: fixtureNow,
     quiet: true
   });
   const task = await main(['semantic', 'next', '--run', prepared.runId, '--host', 'claude', '--model', 'unknown'], { cwd: home, home, quiet: true });
@@ -74,10 +78,28 @@ test('semantic commands reject a host or model different from the prepared owner
   const project = join(home, '.claude', 'projects', 'project-a');
   await mkdir(project, { recursive: true });
   await writeFile(join(project, 'session.jsonl'), await readFile(fixture('claude-parity.jsonl')));
-  const prepared = await main(['prepare', '--host', 'claude', '--model', 'model-a', '--source', 'claude', '--days', '30'], { cwd: home, home, quiet: true });
+  const prepared = await main(['prepare', '--host', 'claude', '--model', 'model-a', '--source', 'claude', '--days', '30'], { cwd: home, home, now: fixtureNow, quiet: true });
   await assert.rejects(main(['semantic', 'next', '--run', prepared.runId, '--host', 'codex', '--model', 'model-b'], { cwd: home, home, quiet: true }), /belongs to claude\/model-a/);
   const task = await main(['semantic', 'next', '--run', prepared.runId, '--host', 'claude', '--model', 'model-a'], { cwd: home, home, quiet: true });
   assert.equal(task.kind, 'session_facet');
+});
+
+test('prepare and report apply the same inclusive rolling-window cutoff', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agent-insight-cli-window-'));
+  const project = join(home, '.claude', 'projects', 'project-a');
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, 'session.jsonl'), await readFile(fixture('claude-parity.jsonl')));
+  const cutoff = Date.parse('2026-07-03T09:02:10.000Z') + 30 * 86_400_000;
+
+  for (const [now, expected] of [[cutoff, 1], [cutoff + 1, 0]]) {
+    const context = { cwd: home, home, now, quiet: true };
+    const prepared = await main(['prepare', '--host', 'claude', '--days', '30'], context);
+    const manifest = JSON.parse(await readFile(prepared.manifestPath, 'utf8'));
+    assert.equal(manifest.sessions.length, expected);
+    const { report } = await main(['report', '--source', 'claude', '--days', '30'], context);
+    assert.equal(report.totals.sessions, expected);
+    assert.equal(report.coverage.sourcesScanned[0].filesWithinWindow, expected);
+  }
 });
 
 test('an empty or unavailable source still produces a transparent empty report', async () => {
@@ -103,10 +125,7 @@ function aggregateResult(section, id) {
     what_works: { intro: 'Checks work.', impressive_workflows: [workflow('One'), workflow('Two'), workflow('Three')] },
     friction_analysis: { intro: 'Some friction.', categories: [category('Tools'), category('Context'), category('Approach')] },
     suggestions: {
-      claude_md_additions: [
-        { addition: 'Run tests.', why: 'Repeated.', prompt_scaffold: 'Add under Testing.', ...evidence },
-        { addition: 'Keep scope.', why: 'Repeated.', prompt_scaffold: 'Add under Workflow.', ...evidence }
-      ],
+      claude_md_additions: [],
       features_to_try: [
         { feature: 'Custom Skills', one_liner: 'Reuse workflows.', why_for_you: 'Checks repeat.', example_code: '/test', ...evidence },
         { feature: 'Hooks', one_liner: 'Automate checks.', why_for_you: 'Checks matter.', example_code: 'hooks', ...evidence }
@@ -133,7 +152,7 @@ test('CLI drives one complete host-mediated fused report including audit extensi
   await mkdir(project, { recursive: true });
   await writeFile(join(project, 'session.jsonl'), await readFile(fixture('claude-parity.jsonl')));
 
-  const prepared = await main(['prepare', '--host', 'claude', '--source', 'claude', '--days', '30'], { cwd: home, home, quiet: true });
+  const prepared = await main(['prepare', '--host', 'claude', '--source', 'claude', '--days', '30'], { cwd: home, home, now: fixtureNow, quiet: true });
   const facet = await main(['semantic', 'next', '--run', prepared.runId, '--host', 'claude', '--model', 'unknown'], { cwd: home, home, quiet: true });
   assert.equal(facet.kind, 'session_facet');
   const id = facet.input.opaqueId;
@@ -172,7 +191,7 @@ test('CLI drives one complete host-mediated fused report including audit extensi
     findings: [{
       category: 'acceptance_criteria',
       severity: 'high',
-      evidence_posture: 'established_pattern',
+      evidence_posture: 'observed_instance',
       accusation: 'You patch first and define done later.',
       explanation: 'The ask jumps to a fix without stating the regression gate up front.',
       quotations: ['Fix the broken parser'],
@@ -189,7 +208,7 @@ test('CLI drives one complete host-mediated fused report including audit extensi
     top_three: [{
       category: 'acceptance_criteria',
       severity: 'high',
-      evidence_posture: 'established_pattern',
+      evidence_posture: 'observed_instance',
       accusation: 'You patch first and define done later.',
       explanation: 'The ask jumps to a fix without stating the regression gate up front.',
       quotations: ['Fix the broken parser'],
@@ -203,29 +222,19 @@ test('CLI drives one complete host-mediated fused report including audit extensi
       habit: 'You harden the win with a regression ask.',
       explanation: 'After the first repair, you demand an edge-case test.',
       quotations: ['Add a regression test for the parser edge case.'],
-      locators: [{ session_id: sessionId, message_indexes: [9] }]
+      locators: [{ session_id: sessionId, message_indexes: [10] }]
     }],
-    self_defeating_patterns: [{
-      pattern: 'Fix it, then remember the test',
-      intent: 'implementation before acceptance criteria',
-      explanation: 'Acceptance arrives as a sequel.',
-      quotations: ['Fix the broken parser'],
-      locators: [{ session_id: sessionId, message_indexes: [1] }]
-    }],
+    // One observed request cannot establish a recurring self-defeating habit.
+    self_defeating_patterns: [],
     highest_leverage_change: {
       change: 'Lead with the failing case and the green bar that proves it.',
-      rationale: 'One acceptance sentence collapses the patch-first habit.'
+      copyable_prompt: 'Fix this parser failure and add its regression test; finish after that test passes.',
+      rationale: 'One acceptance sentence collapses the patch-first habit.',
+      quotations: ['Fix the broken parser'],
+      locators: [{ session_id: sessionId, message_indexes: [1] }]
     },
-    automation_candidates: [{
-      name: 'parser-regression-gate',
-      type: 'Skill',
-      trigger: 'When asking to fix a parser failure',
-      frequency: 'Repeated repair-then-test sessions',
-      inputs: ['failing behavior'],
-      outputs: ['fix plus regression test'],
-      rationale: 'Repair then regression ask is a multi-step workflow.',
-      over_automation_risk: 'A canned skill could skip novel diagnosis.'
-    }]
+    // This sample has no repeated multi-step workflow.
+    automation_candidates: []
   });
 
   assert.equal((await main(['semantic', 'next', '--run', prepared.runId, '--host', 'claude', '--model', 'unknown'], { cwd: home, home, quiet: true })).kind, 'complete');
@@ -233,7 +242,7 @@ test('CLI drives one complete host-mediated fused report including audit extensi
   assert.equal(finalized.report.extensions.userAudit.status, 'complete');
   assert.match(finalized.report.extensions.userAudit.aggregate.highestLeverageChange.change, /failing case/);
   const html = await readFile(finalized.files.html, 'utf8');
-  assert.match(html, /Three hard truths/);
+  assert.match(html, /Priority findings/);
   assert.match(html, /Habits worth keeping/);
 });
 

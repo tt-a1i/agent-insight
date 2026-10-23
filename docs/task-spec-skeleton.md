@@ -1,6 +1,6 @@
 # Task Spec Skeleton
 
-A high-spec task spec reduces clarification density and correction rate — the two most common efficiency signals flagged by Agent Insight. Fill this skeleton before handing a task to any coding agent.
+Use this optional template when a task needs explicit scope, context, or acceptance criteria. Choose the fields that help the task; short messages or keyword counts alone do not show that a specification is missing.
 
 ## Skeleton
 
@@ -34,14 +34,14 @@ Constraints:
 
 ## Why each field matters
 
-| Field | Efficiency signal it prevents |
+| Field | What it clarifies |
 |------|------------------------------|
-| Goal | `clarification_density` — agent knows the endpoint |
-| Current state | `correction_rate` — agent does not redo finished work |
-| Gaps | `clarification_density` — agent knows what remains |
-| Execution order | `direction_churn` — agent follows a path, not guessing |
-| Completion criteria | `verification_gap` — agent has a checklist to verify against |
-| Constraints | `correction_rate` — agent avoids forbidden actions |
+| Goal | The expected endpoint |
+| Current state | What is already complete |
+| Gaps | What remains to do |
+| Execution order | Dependencies or an intentional order |
+| Completion criteria | What evidence will establish completion |
+| Constraints | Boundaries the agent should respect |
 
 ## Usage tips
 

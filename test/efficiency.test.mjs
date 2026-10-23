@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strictEqual, deepEqual, ok } from 'node:assert';
-import { sessionEfficiency, corpusEfficiency, efficiencyToFindings, EFFICIENCY_TO_CATEGORY } from '../src/efficiency.mjs';
+import { sessionEfficiency, corpusEfficiency } from '../src/efficiency.mjs';
 
 function makeSession(overrides = {}) {
   return {
@@ -75,32 +75,30 @@ test('sessionEfficiency returns null coverage when parse layer did not retain te
 
 test('corpusEfficiency aggregates across sessions and derives thresholds', () => {
   const sessions = [
-    makeSession({ id: 'a', clarificationDensity: 0.1, correctionRate: 0.05 }),
-    makeSession({ id: 'b', clarificationDensity: 0.2, correctionRate: 0.1 }),
-    makeSession({ id: 'c', clarificationDensity: 0.3, correctionRate: 0.15 }),
-    makeSession({ id: 'd', clarificationDensity: 0.4, correctionRate: 0.2 }),
-    makeSession({ id: 'e', clarificationDensity: 0.5, correctionRate: 0.25 })
+    makeSession({ id: 'a', userMessages: 20, shortUserTurns: 2, correctionTurns: 1 }),
+    makeSession({ id: 'b', userMessages: 20, shortUserTurns: 4, correctionTurns: 2 }),
+    makeSession({ id: 'c', userMessages: 20, shortUserTurns: 6, correctionTurns: 3 }),
+    makeSession({ id: 'd', userMessages: 20, shortUserTurns: 8, correctionTurns: 4 }),
+    makeSession({ id: 'e', userMessages: 20, shortUserTurns: 10, correctionTurns: 5 })
   ];
   const corpus = corpusEfficiency(sessions);
   strictEqual(corpus.sessions.length, 5);
-  ok(corpus.aggregates.clarificationDensity.mean !== null);
-  ok(corpus.aggregates.clarificationDensity.median !== null);
-  ok(corpus.thresholds.clarificationDensityHigh > 0);
+  strictEqual(corpus.aggregates.clarificationDensity.mean, 0.3);
+  strictEqual(corpus.aggregates.clarificationDensity.median, 0.3);
+  strictEqual(corpus.thresholds.clarificationDensityHigh, 0.4);
+  deepEqual(corpus.sessions.map((s) => s.sessionId), ['a', 'b', 'c', 'd', 'e']);
 });
 
 test('corpusEfficiency flags sessions exceeding thresholds', () => {
-  const sessions = [
-    makeSession({ clarificationDensity: 0.1, correctionRate: 0.05 }),
-    makeSession({ clarificationDensity: 0.8, correctionRate: 0.5, lastToolSequence: ['Write', 'Write', 'Write', 'Write', 'Write'] }),
-    makeSession({ clarificationDensity: 0.15, correctionRate: 0.08 }),
-    makeSession({ clarificationDensity: 0.2, correctionRate: 0.1 }),
-    makeSession({ clarificationDensity: 0.25, correctionRate: 0.12 })
-  ];
+  const sessions = [1, 8, 2, 3, 4].map((shortUserTurns, index) => makeSession({
+    id: `session-${index}`, shortUserTurns, correctionTurns: 0,
+    lastToolSequence: ['test'],
+  }));
   const corpus = corpusEfficiency(sessions);
-  ok(corpus.flagged.length > 0);
-  // The high-clarification session should be flagged
-  const flaggedIndices = corpus.flagged.map((f) => f.index);
-  ok(flaggedIndices.includes(1));
+  // Only the actual short-turn outlier should cross the corpus threshold.
+  deepEqual(corpus.flagged, [{ index: 1, issues: [{
+    signal: 'clarification_density', value: 0.8, threshold: 0.4, severity: 'medium'
+  }] }]);
 });
 
 test('corpusEfficiency handles empty sessions array', () => {
@@ -108,44 +106,4 @@ test('corpusEfficiency handles empty sessions array', () => {
   strictEqual(corpus.sessions.length, 0);
   strictEqual(corpus.flagged.length, 0);
   strictEqual(corpus.aggregates.clarificationDensity.mean, null);
-});
-
-test('EFFICIENCY_TO_CATEGORY maps all signals to existing AUDIT_CATEGORIES', () => {
-  const expectedSignals = ['clarification_density', 'correction_rate', 'dominant_tool_share', 'verification_gap'];
-  deepEqual(Object.keys(EFFICIENCY_TO_CATEGORY).sort(), expectedSignals.sort());
-  for (const category of Object.values(EFFICIENCY_TO_CATEGORY)) {
-    ok(typeof category === 'string' && category.length > 0);
-  }
-});
-
-test('efficiencyToFindings produces audit-shaped findings from flagged corpus', () => {
-  const sessions = [
-    makeSession({ clarificationDensity: 0.1, correctionRate: 0.05 }),
-    makeSession({ clarificationDensity: 0.8, correctionRate: 0.5, lastToolSequence: ['Write', 'Write', 'Write', 'Write', 'Write'] }),
-    makeSession({ clarificationDensity: 0.15, correctionRate: 0.08 }),
-    makeSession({ clarificationDensity: 0.2, correctionRate: 0.1 }),
-    makeSession({ clarificationDensity: 0.25, correctionRate: 0.12 })
-  ];
-  const corpus = corpusEfficiency(sessions);
-  const findings = efficiencyToFindings(corpus, []);
-  ok(findings.length > 0);
-  for (const finding of findings) {
-    ok(finding.category);
-    ok(finding.severity);
-    ok(finding.accusation);
-    ok(finding.explanation);
-    ok(finding.betterAlternative);
-    ok(finding.copyablePrompt);
-    ok(finding.rootCause);
-    deepEqual(finding.quotations, []);
-    strictEqual(finding.evidencePosture, 'established_pattern');
-  }
-});
-
-test('efficiencyToFindings returns empty array when no sessions flagged', () => {
-  const sessions = [makeSession({ clarificationDensity: 0.01, correctionRate: 0.01, lastToolSequence: ['test', 'grep', 'diff', 'build', 'lint'] })];
-  const corpus = corpusEfficiency(sessions);
-  strictEqual(corpus.flagged.length, 0);
-  const findings = efficiencyToFindings(corpus, []);
-  strictEqual(findings.length, 0);
 });
